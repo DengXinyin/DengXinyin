@@ -1,0 +1,993 @@
+---
+title: "CellChat identifies communication patterns and predicts functions for poorly studied pathways"
+author: "Deng Xinyin"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    theme: united
+    df_print: kable  # 设置数据框的输出格式为 "kable"
+    toc: true  # 启用目录（Table of Contents）
+    toc_depth: 3  # 目录显示深度为3级
+    toc_float: true  # 启用浮动目录
+mainfont: Arial
+vignette: >
+  %\VignetteIndexEntry{CellChat identifies communication patterns and predicts functions for poorly studied pathways}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  root.dir = './',
+   tidy = TRUE,  # 美化代码输出
+  tidy.opts = list(width.cutoff = 95),  # 设定代码美化的宽度限制
+  message = FALSE,  # 不显示信息
+  warning = FALSE,  # 不显示警告
+  time_it = TRUE,  # 启用执行时间测量
+  error = TRUE,  # 保留错误信息
+  fig.height = 9,  # 设置图像高度
+  fig.width = 12,  # 设置图像宽度
+  fig.align = 'center'  # 设置图像对齐方式为居中
+)
+#knitr::opts_chunk$set(eval = FALSE)
+```
+
+
+# 前言
+虽然CellChat已经给出了原文教程，但还是有部分内容只找得到对应数据集但无对应代码。
+这对于结合[原文](https://www.nature.com/articles/s41467-021-21246-9#data-availability)详细分析CellChat的各种用途造成了一定干扰。
+故此对涉及原文中的图片进行代码复现。
+
+   
+这一部分对应的是 CellChat identifies communication patterns and predicts functions for poorly studied pathways
+
+
+[文献1](https://www.nature.com/articles/s41467-018-08247-x)
+Guerrero-Juarez, Christian F et al. “Single-cell analysis reveals fibroblast heterogeneity and myeloid-derived adipocyte progenitors in murine skin wounds.” Nature communications vol. 10,1 650. 8 Feb. 2019, doi:10.1038/s41467-018-08247-x  IF: 14.7 Q1
+
+[GSE113854](https://ftp.ncbi.nlm.nih.gov/geo/series/GSE113nnn/GSE113854/suppl/GSE113854_RAW.tar)
+
+这个数据集作者并未提供代码，需要结合文献1进行分析。
+3′-末端转录本的质量控制指标：对于初始Cell Ranger指标评估后的下游分析，去除低质量的细胞以消除细胞特异性偏差。
+质量控制指标包括保持细胞显示 < 8000 UMI/细胞和 < 2500 个基因/细胞，线粒体基因表达不超过 8%。
+质量控制后，剩余 21,819 个细胞用于下游生物信息学分析。
+
+# Fig_2 
+GSE113854: 12日龄小鼠皮肤伤口组织
+```{r,echo=TRUE}
+# mkdir -p /home/hsinyinteng/CellChat/Article/day12_mouse_skin_wound/
+# cd /home/hsinyinteng/CellChat/Article/day12_mouse_skin_wound/
+# wget https://ftp.ncbi.nlm.nih.gov/geo/series/GSE113nnn/GSE113854/suppl/GSE113854_RAW.tar
+# tar -xvf GSE113854_RAW.tar
+
+library(Seurat)
+library(dplyr)
+# 需要将 genes.tsv.gz 重命名为 features.tsv.gz
+setwd('/home/hsinyinteng/CellChat/Article/')
+# 设置文件目录
+data_dir <- "/home/hsinyinteng/CellChat/Article/day12_mouse_skin_wound/"
+
+# 读取目录中的文件名
+file_names <- list.files(path = data_dir, pattern = "*.gz")
+
+# 处理并重命名文件
+for (name in file_names) {
+  parts <- unlist(strsplit(name, "_"))  # 分隔文件名
+  new_name <- paste(parts[-1], collapse = "_")
+  # 特殊处理：将 genes.tsv.gz 改名为 features.tsv.gz
+  if (new_name == "genes.tsv.gz") {
+    new_name <- "features.tsv.gz"
+  }
+  
+  # 重命名文件
+  file.rename(file.path(data_dir, name), file.path(data_dir, new_name))
+}
+
+list.files(path = data_dir, pattern = "*.gz")
+data <- Read10X(data.dir = data_dir)
+day12_mouse_skin_wound <- CreateSeuratObject(counts = data, project = "mouse_skin")
+
+
+day12_mouse_skin_wound[["percent.mt"]] <- PercentageFeatureSet(day12_mouse_skin_wound, pattern = "^mt-")  # human: "^MT-"  ; mouse:"^mt-"
+
+# 应用质量控制过滤条件
+day12_mouse_skin_wound <- subset(day12_mouse_skin_wound, 
+                                 subset = nFeature_RNA < 2500 & nCount_RNA < 8000 & percent.mt < 8)  
+# day12_mouse_skin_wound
+# An object of class Seurat 
+# 27998 features across 21819 samples within 1 assay 
+# Active assay: RNA (27998 features, 0 variable features)
+#  1 layer present: counts
+
+# 数据标准化和对数转换
+day12_mouse_skin_wound <- NormalizeData(day12_mouse_skin_wound)
+day12_mouse_skin_wound <- FindVariableFeatures(day12_mouse_skin_wound, 
+                                               selection.method = "vst", 
+                                               nfeatures = 2000)
+day12_mouse_skin_wound <- ScaleData(day12_mouse_skin_wound)
+day12_mouse_skin_wound <- RunPCA(day12_mouse_skin_wound, npcs = 40)
+# day12_mouse_skin_wound <- JackStraw(day12_mouse_skin_wound, num.replicate = 100) # 21 min!
+# day12_mouse_skin_wound <- ScoreJackStraw(day12_mouse_skin_wound, dims = 1:20)
+ElbowPlot(day12_mouse_skin_wound)
+# JackStrawPlot(day12_mouse_skin_wound, dims = 1:20)
+
+day12_mouse_skin_wound <- FindNeighbors(day12_mouse_skin_wound, dims = 1:40)
+day12_mouse_skin_wound <- FindClusters(day12_mouse_skin_wound, resolution = 0.45)  #1:20+0.4
+#day12_mouse_skin_wound$RNA_snn_res.0.4 <- NULL
+
+mk <- c(
+  'Crabp1', # Fibroblast-type 1(FIB-1)
+  'Eln','Ogn',   # Fibroblast-type 3(FIB-3)
+  'Des','Rgs5', # Fibroblast-type 2(FIB-2)
+  'Birc5','Ccnb2',  # Fibroblast-type 4(FIB-4)
+  'Hdc','G0s2',  # Fibroblast-type 5(FIB-5)
+  
+  'C1qb','Pf4',  # Myeloid cells(MYL)
+  'Cd93','Pecam1',  # Endothelial cells(ENDO)
+
+  'Icos','Nkg7',  # T cells(TC)
+  'Ccr7','H2-DMb1',  # B cells(BC)
+  'Cadm4','Itih5',  # Schwan cells(SCH)
+  'Hba-a2','Hbb-bs',  # Erythrocytes(RBC)
+  'Acp5', 'Mmp9', # Dendritic cells(DEN)
+  'Ccl21a','Lyve1'  # Lymphatic endothelial cells(LYME)
+)
+
+DotPlot(day12_mouse_skin_wound,
+        group.by = 'seurat_clusters',
+        features = mk)+RotatedAxis()
+VlnPlot(day12_mouse_skin_wound, 
+        features = mk, 
+        group.by = 'seurat_clusters',
+        stack = TRUE, 
+        combine = TRUE, 
+        split.by = "ident",
+        flip = T)
+
+#table(Idents(day12_mouse_skin_wound))
+prop.table(table(Idents(day12_mouse_skin_wound))) * 100
+# 1:20+0.45  26.5365049 13.8778129  9.2809020  8.8134195  7.8142903  7.6126312  5.4997938  4.4273340  3.2127962  2.8690591  2.2640818  2.0440900  1.7141024  1.3611990  1.2741189  0.7745543  0.6233100
+# 1:40+0.45  27.1643980 13.7586507 10.0646226  9.8858793  9.0975755  6.5814199  6.5218388  3.6206976  2.8003117  1.8515972  1.8057656  1.7599340  1.6407718  1.3199505  0.8433017  0.6737247  0.6095605 
+
+# new.cluster.ids <- c(
+#   'Fibroblast','Fibroblast','Fibroblast',
+#   'Myeloid cells','Endothelial cells',
+#   'Fibroblast','Myeloid cells',
+#   'B cells','Fibroblast','Fibroblast','T cells','Fibroblast',
+#   'Schwan cells','Dendritic cells','Lymphatic endothelial cells'
+# )
+
+new.cluster.ids <- c(
+  'FIB','FIB','FIB','MYL',
+  'ENDO','FIB','MYL','B',
+  'FIB','FIB','T','FIB','FIB',
+  'SCH','DEN','RBC','LYME'
+)
+names(new.cluster.ids) <- levels(day12_mouse_skin_wound)
+day12_mouse_skin_wound <- RenameIdents(day12_mouse_skin_wound, new.cluster.ids)
+day12_mouse_skin_wound$celltype <- Idents(day12_mouse_skin_wound)
+
+day12_mouse_skin_wound <- RunUMAP(day12_mouse_skin_wound, dims = 1:20)
+DimPlot(day12_mouse_skin_wound, 
+        reduction = "umap", 
+        group.by = 'celltype',
+        label = T, 
+        pt.size = 0.5) + NoLegend()
+
+prop.table(table(Idents(day12_mouse_skin_wound))) * 100
+# FIB        MYL       ENDO          B          T        SCH        DEN        RBC       LYME 
+# 65.6217059 16.4077180  9.0975755  3.6206976  1.8057656  1.3199505  0.8433017  0.6737247  0.6095605
+# 原文细胞比例: FIB-64%;  MYL-15%; ENDO-9%
+
+markers <- FindAllMarkers(day12_mouse_skin_wound, 
+                          only.pos = TRUE, 
+                          min.pct = 0.25, 
+                          logfc.threshold = 0.25)
+top10 <- markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+DoHeatmap(day12_mouse_skin_wound, features = top10$gene) + NoLegend()
+
+# saveRDS(day12_mouse_skin_wound,'day12_mouse_skin_wound_umap.rds')
+# day12_mouse_skin_wound <- readRDS('day12_mouse_skin_wound_umap.rds')
+
+# day12_mouse_skin_wound$celltype_copy <- day12_mouse_skin_wound$celltype
+
+```
+
+
+## fibroblast_9亚群
+```{r,echo=TRUE}
+library(Seurat)
+library(dplyr)
+fibroblast <- subset(day12_mouse_skin_wound, idents = "FIB")
+
+# 重新进行PCA和聚类分析
+fibroblast <- NormalizeData(fibroblast)  %>%
+  FindVariableFeatures()  %>%
+  ScaleData()  %>%
+  RunPCA()
+ElbowPlot(fibroblast)
+fibroblast <- FindNeighbors(fibroblast, dims = 1:30)
+fibroblast <- FindClusters(fibroblast, resolution = 0.3)  # 9亚群
+#fibroblast$RNA_snn_res.0.45 <- NULL
+
+#table(Idents(fibroblast))
+# 原文亚群比例
+# 36  20  14  9  6  5  4  3  3%
+prop.table(table(Idents(fibroblast))) * 100
+# 1:20+0.2   44.629138 19.478978 13.744936  6.984216  4.190529  3.701634  3.261629  2.870513  1.138427 
+# 1:25+0.25  43.895796 20.296131 13.912558  7.075010  4.176561  3.534013  2.996229  2.975276  1.138427
+# 1:25+0.26  42.827211 21.343763 13.912558  7.068026  4.183545  3.547982  3.031150  2.947339  1.138427
+# 1:28+0.29  40.012572 21.364716 13.842715  9.903618  4.001956  3.492108  3.142897  3.121944  1.117475
+# 1:30+0.28  39.670345 21.658053 13.926526 10.029334  4.036877  3.436234  3.107976  2.996229  1.138427
+# 1:30+0.3   40.773851 20.512641 13.919542 10.036318  4.057829  3.450203  3.107976  3.003213  1.138427
+# 1:30+0.31  38.706523 22.600922 13.919542 10.036318  4.022908  3.464171  3.107976  3.003213  1.138427
+# 1:33+0.3   39.349071 22.174885 13.954463  9.889649  4.169577  3.450203  2.968292  2.961307  1.082553
+# 1:35+0.33  39.174466 22.489174 13.535410  9.791870  3.904177  3.715603  3.443218  2.870513  1.075569
+# 1:38+0.33  39.677329 22.258695 13.542394  9.694091  3.890208  3.638776  3.282581  2.926386  1.089538 
+# 1:40+0.33  37.973181 23.913954 13.996368  9.708060  3.897192  3.366392  3.080039  3.017181  1.047632
+
+
+mk_FIB <- c(
+  'Tyrobp','Lyz2','Il1b','Cd74','Apoe',
+  'Rgs5','Col4a1','Gm13889','Il6','Col4a2', 
+  'Ube2c','2810417H13Rik','Stmn1','Mgp','Cenpa','H2afz','Birc5','Col18a1','Crabp1','Col7a1','Brinp3','Saa3','Cxcl5','S100a9','G0s2','S100a8','Ccl4','Ptn','H19','Eln','Mest','Col14a1','Igfbp2','Igfbp5','Megf6','Cyp26b1'
+)
+DotPlot(fibroblast,
+        group.by = 'seurat_clusters',
+        features = mk_FIB)+RotatedAxis()
+VlnPlot(fibroblast, features = mk_FIB, stack = TRUE, combine = TRUE, split.by = "ident",flip = T)
+
+
+
+# new.cluster.ids <- c(
+#   'FIB-F','FIB-H','FIB-B','FIB-D','FIB-G',
+#   'FIB-A','FIB-E','FIB-C','FIB-I'
+# )
+new.cluster.ids <- c(
+  'FIB-F','FIB-H','FIB-B','FIB-D','FIB-E',
+  'FIB-G','FIB-A','FIB-C','FIB-B'
+)
+ # 'FIB-F0','FIB-H1','FIB-B2','FIB-D3','FIB-E4',
+ # 'FIB-G5','FIB-A6','FIB-C7','FIB-B8'
+ 
+names(new.cluster.ids) <- levels(fibroblast)
+fibroblast <- RenameIdents(fibroblast, new.cluster.ids)
+fibroblast$celltype <- Idents(fibroblast)
+
+fibroblast <- RunUMAP(fibroblast, dims = 1:20)
+DimPlot(fibroblast, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+
+fibroblast_markers <- FindAllMarkers(fibroblast, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+top10_fibro <- fibroblast_markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+DoHeatmap(fibroblast, features = top10_fibro$gene) + NoLegend()
+
+# saveRDS(fibroblast,'fibroblast.rds')
+# fibroblast <- readRDS('fibroblast.rds')
+
+day12_mouse_skin_wound@meta.data$celltype <- as.character(day12_mouse_skin_wound@meta.data$celltype)
+fibroblast$celltype <- as.character(fibroblast$celltype)
+
+day12_mouse_skin_wound@meta.data$celltype[colnames(day12_mouse_skin_wound) %in% colnames(fibroblast)] <- fibroblast$celltype
+
+```
+
+## myeloid_5亚群
+```{r,echo=TRUE}
+setwd('/home/hsinyinteng/CellChat/Article/')
+library(Seurat)
+library(dplyr)
+myeloid <- subset(day12_mouse_skin_wound, idents = "MYL")
+
+# 重新进行PCA和聚类分析
+myeloid <- NormalizeData(myeloid)  %>%
+  FindVariableFeatures()  %>%
+  ScaleData()  %>%
+  RunPCA()
+ElbowPlot(myeloid)
+myeloid <- FindNeighbors(myeloid, dims = 1:20)
+myeloid <- FindClusters(myeloid, resolution = 0.41) 
+#myeloid$RNA_snn_res.0.45 <- NULL
+# 原文比例 38  34  24  3  2
+# 1:10+0.385 40.167598 27.318436 20.642458 10.195531  1.675978
+# 1:15+0.385 39.9720670 31.6759777 25.9217877  1.6480447  0.7821229
+# 1:18+0.33  39.9162011 32.2346369 25.6424581  1.6480447  0.5586592
+# 1:20+0.41  39.050279 32.234637 25.446927  1.648045  1.620112 
+
+#table(Idents(myeloid))
+prop.table(table(Idents(myeloid))) * 100  # 计算各 idents 的比例并转换为百分数
+
+mk_MYL <- c(
+  'Col1a1','Col1a2','Meg3','Col3a1','Sparc','Apoe','Pf4','Sepp1','Ctsd','Syngr1','2810417H13Rik','Birc5','Top2a','Stmn1','Tuba1b','Cd74','H2-Ab1','Il1b','H2-Aa','H2-Eb1','Col4a1','Col4a2','Igfbp7','Col18a1','Rgs5'
+)
+DotPlot(myeloid,
+        group.by = 'seurat_clusters',
+        features = mk_MYL) + RotatedAxis()
+VlnPlot(myeloid, features = mk_MYL, stack = TRUE, combine = TRUE, split.by = "ident",flip = T)
+
+# new.cluster.ids <- c('MY-A','MY-B','MY-D','MY-E','MY-C')
+new.cluster.ids <- c('MY-A','MY-B','MY-D','MY-C','MY-E')
+
+names(new.cluster.ids) <- levels(myeloid)
+myeloid <- RenameIdents(myeloid, new.cluster.ids)
+myeloid$celltype <- Idents(myeloid)
+
+myeloid <- RunUMAP(myeloid, dims = 1:20)
+DimPlot(myeloid, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+
+prop.table(table(Idents(myeloid))) * 100  # 计算各 idents 的比例并转换为百分数
+# MY-A      MY-B      MY-D      MY-C      MY-E 
+# 39.050279 32.234637 25.446927  1.648045  1.620112 
+
+myeloid_markers <- FindAllMarkers(myeloid, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+top10_myeloid <- myeloid_markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+DoHeatmap(myeloid, features = top10_myeloid$gene) + NoLegend()
+
+# saveRDS(myeloid,'myeloid.rds')
+# myeloid <- readRDS('myeloid.rds')
+
+myeloid$celltype <- as.character(myeloid$celltype)
+day12_mouse_skin_wound@meta.data$celltype[colnames(day12_mouse_skin_wound) %in% colnames(myeloid)] <- myeloid$celltype
+
+```
+
+
+## Endothelial_6亚群
+```{r,echo=TRUE}
+setwd('/home/hsinyinteng/CellChat/Article/')
+library(Seurat)
+library(dplyr)
+
+# 读取数据并提取 Endothelial 细胞类型的数据
+# day12_mouse_skin_wound <- readRDS('day12_mouse_skin_wound.rds')
+# Idents(day12_mouse_skin_wound)
+Endothelial <- subset(day12_mouse_skin_wound, idents = "ENDO")
+
+# 重新进行PCA和聚类分析
+Endothelial <- NormalizeData(Endothelial)  %>%
+  FindVariableFeatures()  %>%
+  ScaleData()  %>%
+  RunPCA()
+
+ElbowPlot(Endothelial)
+
+Endothelial <- FindNeighbors(Endothelial, dims = 1:12)
+Endothelial <- FindClusters(Endothelial, resolution = 0.3)  # 6亚群
+#Endothelial$RNA_snn_res.0.45 <- NULL
+
+# 计算各 idents 的比例并转换为百分数
+# table(Idents(Endothelial))
+prop.table(table(Idents(Endothelial))) * 100
+
+#原文比例
+# 43  19  15  8  8  6
+# 1:10+0.3   36.675063 19.294710 16.876574 11.234257  9.219144  6.700252
+# 1:12+0.3   36.876574 19.193955 16.574307 11.788413  8.916877  6.649874
+# 1:13+0.2   45.642317 19.093199 16.423174  9.571788  6.448363  2.821159
+# 1:15+0.25  46.095718 18.942065 16.070529  9.672544  6.448363  2.770781
+# 1:20+0.25  46.347607 19.244332 16.171285  9.722922  5.793451  2.720403
+# 1:25+0.3   45.793451 19.143577 16.070529  9.420655  6.851385  2.720403 
+# 1:30+0.28  46.5491184 19.1939547 15.7682620 11.6876574  5.9445844  0.8564232
+
+mk_ENDO <- c(
+  'Col1a2','Col1a1','Dcn','Col3a1','Postn','Tyrobp','Lyz2','Il1b','Cd74','Apoe','Gja5','Gja4','Stmn2','Sema3g','Cxcl12','Rgs5','Serpine2','Gm13889','Il6','Mgp','Ctla2a','Emcn','Selp','Lrg1','Fabp4','2810417H13Rik','Top2a','Ube2c','Stmn1','Hmgb2'
+)
+
+DotPlot(Endothelial, group.by = 'seurat_clusters', features = mk_ENDO) + RotatedAxis()
+VlnPlot(Endothelial, features = mk_ENDO, stack = TRUE, combine = TRUE, split.by = "ident", flip = TRUE)
+
+# 重命名聚类
+# new.cluster.ids <- c('END-E','END-A','END-D','END-B','END-F','END-C')
+new.cluster.ids <- c('END-E','END-A','END-D','END-B','END-C','END-F')
+# 'END-E0','END-A1','END-D2','END-B3','END-C4','END-F5'
+
+names(new.cluster.ids) <- levels(Endothelial)
+Endothelial <- RenameIdents(Endothelial, new.cluster.ids)
+Endothelial$celltype <- Idents(Endothelial)
+
+# 运行UMAP降维并绘制图表
+Endothelial <- RunUMAP(Endothelial, dims = 1:20)
+DimPlot(Endothelial, reduction = "umap", label = TRUE, pt.size = 0.5) + NoLegend()
+
+# 查找所有标记基因并绘制热图
+Endothelial_markers <- FindAllMarkers(Endothelial, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+top10_Endothelial <- Endothelial_markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+DoHeatmap(Endothelial, features = top10_Endothelial$gene) + NoLegend()
+
+# 保存 Endothelial 对象
+# saveRDS(Endothelial, 'Endothelial.rds')
+# Endothelial <- readRDS('Endothelial.rds')
+
+# 将 Endothelial 对象中的所有细胞所在行，按照 Endothelial$celltype 赋值给 day12_mouse_skin_wound 的 meta.data 里的 celltype
+Endothelial$celltype <- as.character(Endothelial$celltype)
+day12_mouse_skin_wound@meta.data$celltype[colnames(day12_mouse_skin_wound) %in% colnames(Endothelial)] <- Endothelial$celltype
+
+
+# 获取 day12_mouse_skin_wound@meta.data$celltype 中所有唯一的水平
+all_levels <- unique(day12_mouse_skin_wound@meta.data$celltype)
+# 将 day12_mouse_skin_wound@meta.data$celltype 转换为因子类型并设置适当的因子水平
+day12_mouse_skin_wound@meta.data$celltype <- factor(day12_mouse_skin_wound@meta.data$celltype, levels = all_levels)
+
+DimPlot(day12_mouse_skin_wound, 
+        reduction = "umap", 
+        group.by = 'celltype',
+        label = TRUE, 
+        pt.size = 0.5) + NoLegend()
+
+desired_order <- c(
+  "FIB-A","FIB-B","FIB-C","FIB-D","FIB-E","FIB-F","FIB-G","FIB-H", # FIB有2个亚群归为了FIB-B
+  "MY-A","MY-B","MY-C","MY-D","MY-E",
+  "END-A","END-B","END-C","END-D","END-E","END-F",
+  "B","DEN","LYME","RBC","T",'SCH')
+# 将 celltype 列转化为因子，并指定水平顺序
+day12_mouse_skin_wound$celltype <- factor(day12_mouse_skin_wound$celltype, levels = desired_order)
+table(day12_mouse_skin_wound$celltype)
+# FIB-A FIB-B FIB-C FIB-D FIB-E FIB-F FIB-G FIB-H  MY-A  MY-B  MY-C  MY-D  MY-E END-A END-B END-C END-D END-E END-F     
+#   445  2156   430  1437   581  5838   494  2937  1398  1154    59   911    58   381   234   177   329   732   132   
+#   B   DEN   LYME   RBC   T    SCH 
+#  790  184   133   147   394   288
+  
+
+# saveRDS(day12_mouse_skin_wound,'day12_mouse_skin_wound_umap.rds')
+# day12_mouse_skin_wound <- readRDS('day12_mouse_skin_wound_umap.rds')
+
+```
+
+## GSE113854_CellChat_Secreted Signaling
+```{r,echo=TRUE}
+library(NMF)
+library(circlize)
+library(ComplexHeatmap)
+library(BiocNeighbors)
+library(dplyr)
+library(igraph)
+library(CellChat)
+library(patchwork)
+library(Seurat)
+setwd('/home/hsinyinteng/CellChat/Article/')
+# day12_mouse_skin_wound <- readRDS('day12_mouse_skin_wound_umap.rds')
+data.input = LayerData(day12_mouse_skin_wound, assay="RNA", layer='data') # normalized data matrix
+meta = day12_mouse_skin_wound@meta.data # a dataframe with rownames containing cell mata data
+cell.use = rownames(meta)
+# meta = data.frame(labels = meta$labels[cell.use], row.names = colnames(data.input)) # manually create a dataframe consisting of the cell labels
+unique(meta$celltype) 
+cellchat <- createCellChat(object = data.input, meta = meta, group.by = "celltype")
+
+cellchat <- addMeta(cellchat, meta = meta)
+cellchat <- setIdent(cellchat, ident.use = "celltype") # set "celltype" as default cell identity
+levels(cellchat@idents) # show factor levels of the cell labels
+groupSize <- as.numeric(table(cellchat@idents)) # number of cells in each cell group
+
+CellChatDB <- CellChatDB.mouse 
+showDatabaseCategory(CellChatDB)
+#dplyr::glimpse(CellChatDB$interaction) 
+
+CellChatDB.use <- subsetDB(CellChatDB, search = "Secreted Signaling") # use Secreted Signaling
+cellchat@DB <- CellChatDB.use
+
+cellchat <- subsetData(cellchat) 
+future::plan("multisession", workers = 9) 
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)  # 略久 847
+# The number of highly variable ligand-receptor pairs used for signaling inference is 846 
+
+# project gene expression data onto PPI (Optional: when running it, USER should set `raw.use = FALSE` in the function `computeCommunProb()` in order to use the projected data)
+# cellchat <- projectData(cellchat, PPI.human)
+cellchat <- projectData(cellchat, PPI.mouse)
+cellchat <- computeCommunProb(cellchat, raw.use = FALSE)  # 好久好久好久呀  ~16 mins
+
+# cellchat <- computeCommunProb(
+#   object = cellchat,
+#   type = "triMean", # 使用三次平均值方法计算平均基因表达
+#   trim = 0.1, # 在计算均值前修剪的观察值比例
+#   LR.use = NULL, # 使用所有的配体-受体相互作用
+#   raw.use = TRUE, # 使用原始数据
+#   population.size = FALSE, # 不考虑群体大小
+#   distance.use = TRUE, # 使用距离约束
+#   interaction.range = 250, # 最大相互作用长度（单位：微米）
+#   scale.distance = 0.01, # 空间距离的缩放因子
+#   k.min = 10, # 定义空间上邻近的细胞组所需的最少交互细胞对数
+#   contact.dependent = TRUE, # 使用接触依赖的方式推断信号传递
+#   contact.range = NULL, # 使用默认接触范围
+#   contact.knn.k = NULL, # 不使用 KNN
+#   contact.dependent.forced = FALSE, # 不强制所有信号对使用接触依赖方式
+#   do.symmetric = TRUE, # 将邻接矩阵转换为对称矩阵
+#   nboot = 100, # p值阈值
+#   seed.use = 1L, # 设置随机种子
+#   Kh = 0.5, # Hill 函数中的参数
+#   n = 1 # Hill 函数中的参数
+# )
+
+#   raw.use = TRUE：使用原始数据，即 object@data.signaling。这适用于高质量的单细胞测序数据，数据深度较深且信号基因表达完整。
+#   raw.use = FALSE：使用投影数据，即 object@data.project。这特别适用于浅层测序的单细胞数据，原因如下：
+# 浅层测序可能导致一些信号基因的表达值为零（即 drop-out 效应），特别是配体/受体的亚单位。
+# 使用投影数据可以帮助减少这种 drop-out 效应，通过预测和补全这些缺失值，提高信号基因表达的完整性。
+
+
+# Filter out the cell-cell communication if there are only few number of cells in certain cell groups
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+
+cellchat <- computeCommunProbPathway(cellchat)
+cellchat <- aggregateNet(cellchat)
+cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP")
+
+
+# desired_order <- c(
+#   "FIB-A","FIB-B","FIB-C","FIB-D","FIB-E","FIB-F","FIB-G","FIB-H", # FIB有2个亚群归为了FIB-B
+#   "MY-A","MY-B","MY-C","MY-D","MY-E",
+#   "END-A","END-B","END-C","END-D","END-E","END-F",
+#   "B","DEN","LYME","RBC","T",'SCH')
+# cellchat@idents <- factor(cellchat@idents, levels = desired_order)  # 将 celltype 转化为因子，并指定水平顺序
+# table(cellchat@idents)
+
+# saveRDS(cellchat, file = "GSE113854_CellChat_Secreted Signaling.rds")
+# cellchat <- readRDS("GSE113854_CellChat_Secreted Signaling.rds")
+
+```
+
+细胞类型之间的通讯数量和通讯强度
+```{r,echo=TRUE,fig.width=21,fig.height=16,fig.align='center'}
+groupSize <- as.numeric(table(cellchat@idents))
+par(mfrow = c(1, 2), xpd = TRUE, mar = c(1,1,2,1))  # mar参数表示底部、左侧、顶部和右侧的边距  
+netVisual_circle(cellchat@net$count, vertex.weight = groupSize, 
+                 weight.scale = T,  
+                 margin = c(0.15,0.15,0.25,0.15), # 图下方、上方、左侧和右侧的空白量，是一个长度为四的数值向量。通常 0 到 0.5 之间的值有意义，但也可以是负值，这将使图放大到图的一部分。如果长度小于四，则循环使用
+                 alpha.edge = 1,  # 边的透明度
+                 label.edge = FALSE,  # 是否显示边的标签
+                 title.name = "Number of interactions")
+netVisual_circle(cellchat@net$weight, vertex.weight = groupSize, 
+                 weight.scale = T, 
+                 margin = c(0.15,0.15,0.25,0.15),
+                 alpha.edge = 1,  # 边的透明度
+                 label.edge = FALSE,  # 是否显示边的标签
+                 title.name = "Interaction weights/strength")
+
+mat <- cellchat@net$weight
+par(mfrow = c(5,5), xpd=TRUE, mar = c(1,1,2,1))
+for (i in 1:nrow(mat)) {
+  mat2 <- matrix(0, nrow = nrow(mat), ncol = ncol(mat), dimnames = dimnames(mat))
+  mat2[i, ] <- mat[i, ]
+  netVisual_circle(mat2, 
+                   vertex.weight = groupSize, 
+                   weight.scale = T, 
+                   edge.weight.max = max(mat), 
+                   title.name = rownames(mat)[i],
+                   margin = c(0.1,0.1,0.2,0.1),
+                   arrow.width = 0.5,
+                   arrow.size = 0.2
+                   )
+}
+
+# 原文：CellChat在60个细胞组中检测到25对显著的配体-受体对，进一步分为25个信号通路，包括TGFβ、非经典Wnt（ncWNT）、TNF、SPP1、PTN、PDGF、CXCL、CCL和MIF通路。
+# 绘制层次图的为TGFb和ncWNT
+cellchat@netP$pathways
+#  [1] "MIF"       "MK"        "PTN"       "SPP1"      "PERIOSTIN" "ANGPTL"    "GALECTIN"  "TGFb"      "CSF"       "CCL"      
+# [11] "TNF"       "CXCL"      "APELIN"    "SEMA3"     "PDGF"      "ANGPT"     "PROS"      "ncWNT"     "GAS"       "PLAU"     
+# [21] "IGF"       "EGF"       "KIT"       "IL2"       "EDN"       "RANKL" 
+
+
+# netVisual_circle(
+#   net,  # 一个加权矩阵，表示连接关系
+#   color.use = NULL,  # 颜色表示不同的细胞组
+#   title.name = NULL,  # 标题名称
+#   sources.use = NULL,  # 一个向量，给出源细胞组的索引或名称
+#   targets.use = NULL,  # 一个向量，给出目标细胞组的索引或名称
+#   idents.use = NULL,  # 一个向量，给出感兴趣的细胞组的索引或名称
+#   remove.isolate = FALSE,  # 是否移除通信网络中的孤立节点
+#   top = 1,  # 显示的交互比例
+#   weight.scale = FALSE,  # 是否缩放权重
+#   vertex.weight = 20,  # 顶点的权重：可以是一个标量值或一个向量
+#   vertex.weight.max = NULL,  # 顶点的最大权重；默认值为 max(vertex.weight)
+#   vertex.size.max = NULL,  # 可视化的最大顶点大小
+#   vertex.label.cex = 1,  # 顶点标签的大小
+#   vertex.label.color = "black",  # 顶点标签的颜色
+#   edge.weight.max = NULL,  # 边的最大权重；默认值为 max(net)
+#   edge.width.max = 8,  # 可视化的最大边宽
+#   alpha.edge = 0.6,  # 边的透明度
+#   label.edge = FALSE,  # 是否显示边的标签
+#   edge.label.color = "black",  # 单箭头的颜色
+#   edge.label.cex = 0.8,  # 箭头标签的大小
+#   edge.curved = 0.2,  # 指定是否绘制弯曲的边，可以是逻辑值或数值向量或标量。数值指定边的曲率；零曲率表示直边，负值表示边顺时针弯曲，正值表示相反。TRUE 表示曲率 0.5，FALSE 表示曲率为零
+#   shape = "circle",  # 顶点的形状，目前支持 “circle”, “square”, “csquare”, “rectangle”, “crectangle”, “vrectangle”, “pie” (见 vertex.shape.pie), ‘sphere’, 和 “none”。“none” 不绘制顶点，但会绘制顶点标签（如果有）。详见 shapes 和 vertex.shape.pie
+#   layout = in_circle(),  # 布局规范。必须是一个布局规范函数的调用
+#   margin = 0.2,  # 图下方、上方、左侧和右侧的空白量，是一个长度为四的数值向量。通常 0 到 0.5 之间的值有意义，但也可以是负值，这将使图放大到图的一部分。如果长度小于四，则循环使用
+#   vertex.size = NULL,  # 已弃用。使用 'vertex.weight'
+#   arrow.width = 1,  # 箭头的宽度
+#   arrow.size = 0.2,  # 箭头的大小
+#   text.x = 0,  # 添加文本的 x 坐标
+#   text.y = 1.5  # 添加文本的 y 坐标
+# )
+
+```
+
+## 单个通路的详细通信
+### TGFb
+成纤维细胞FIB、髓系MYL、内皮ENDO、T 细胞TC、B 细胞BC、树突状细胞DC、淋巴内皮细胞LYME、施万细胞SCH、红细胞RBC
+
+相关结果的生物学意义
+1. 揭示TGFβ 信号的来源及去向  @netVisual_aggregate;   @ netAnalysis_signalingRole_network
+对推断的 TGFβ 信号转导网络的网络中心性分析发现，几种髓系细胞群 MYL 是作用于成纤维细胞的TGFβ配体的最主要来源。
+某些内皮细胞群以及几种成纤维细胞群（都是TGFβ配体的已知来源）对伤口中髓系主导的TGFβ信号的产生有显著贡献。
+这表明皮肤伤口中的TGFβ信号网络是复杂且高度冗余的，具有多个配体源靶向大部分伤口成纤维细胞。
+
+2. 揭示细胞之间的TGFβ分泌方式(自分泌/旁分泌)  @netVisual_aggregate;   @ netAnalysis_signalingRole_network
+CellChat 显示伤口细胞之间的大多数 TGFβ 相互作用是旁分泌，只有一个成纤维细胞和一个髓系群表现出显着的自分泌信号传导 
+
+3. 鉴定TGFβ信号的主要配体-受体对  @ netAnalysis_contribution
+在所有已知的配体-受体对中，伤口TGFβ信号转导以Tgfb1配体及其多聚体Tgfbr1/Tgfbr2受体为主
+
+图片解释
+1. 层次图(netVisual_aggregate @hierarchy)
+显示了推断出的 TGFβ 信号转导的细胞间通信网络。
+该图由两部分组成：左侧和右侧部分分别突出显示了到成纤维细胞状态和其他非成纤维细胞皮肤细胞状态的自分泌和旁分泌信号。
+实心圆圈和开放圆圈分别表示源和目标。
+圆圈大小与每个单元格组中的单元格数量成正比，边缘宽度表示通信概率。
+边缘颜色与信号源一致。
+
+2. 热图(netAnalysis_signalingRole_network)
+基于计算出的TGFβ信号网络的四个网络中心性度量，显示了每个细胞组的相对重要性。
+
+3. 配体-受体对的相对贡献 (@netAnalysis_contribution)
+各配体-受体对对TGFβ信号通路整体通信网络的相对贡献，即各配体-受体对推断网络的总通信概率与TGFβ信号通路总通信概率之比。
+
+
+```{r,echo=TRUE,fig.width=12,fig.height=9,fig.align='center'}
+# 在 netVisual_aggregate 函数中，可以通过设置 vertex.weight 参数为代表细胞亚群比例的向量来实现图中圆圈的大小与相应的细胞亚群比例相对应
+# 获取每个细胞群体的细胞数量
+cell_counts <- table(cellchat@idents)
+# 计算每个细胞群体的比例
+cell_proportions <- cell_counts / sum(cell_counts)
+# 将细胞比例传递给 vertex.weight 参数
+netVisual_aggregate(
+  cellchat, # CellChat 对象
+  signaling = 'TGFb', # 信号通路的名称
+  signaling.name = NULL, # 可选的信号通路名称，用于在图中显示
+  color.use = NULL, # 定义每个细胞群体颜色的字符向量
+  thresh = 0.05, # 判断显著相互作用的 p 值阈值
+  vertex.receiver = seq(1,9), # 数值向量，定义在第一个层次图中作为目标的细胞群体索引
+  sources.use = NULL, # 向量，定义来源细胞群体的索引或名称
+  targets.use = NULL, # 向量，定义目标细胞群体的索引或名称
+  idents.use = NULL, # 向量，定义感兴趣的细胞群体的索引或名称
+  top = 1, # 要显示的相互作用的比例
+  remove.isolate = FALSE, # 是否移除通讯网络中的孤立节点
+  vertex.weight = cell_proportions, # 节点的权重：这里设置为细胞比例
+  vertex.weight.max = NULL, # 节点权重的最大值；默认是 max(vertex.weight)
+  vertex.size.max = NULL, # 可视化中节点的最大尺寸
+  weight.scale = TRUE, # 是否缩放边的权重
+  edge.weight.max = NULL, # 边的最大权重；默认是 max(net)
+  edge.width.max = 8, # 可视化中边的最大宽度
+  layout = c("hierarchy"), # 布局方式："hierarchy-层次"、"circle圆形"、"chord弦"或"spatial空间"
+  pt.title = 15, # 标题字体大小
+  title.space = 4, # 标题与图之间的间距
+  vertex.label.cex = 0.8, # 网络中节点标签的大小
+  sample.use = NULL, # 用于可视化的样本，应是 'object@meta$samples' 中的元素
+  alpha.image = 0.15, # 单个点的透明度
+  point.size = 1.5, # 点的大小
+  group = NULL, # 用于制作多组弦图的命名组标签
+  cell.order = NULL, # 定义细胞类型顺序（扇区顺序）的字符向量
+  small.gap = 1, # 扇区之间的小间隙
+  big.gap = 10, # 由 'group' 参数定义的不同扇区组之间的间隙
+  scale = FALSE, # 缩放每个扇区为相同宽度；默认是 FALSE；如果 remove.isolate = TRUE，设置为 TRUE
+  reduce = -1, # 如果某个网格的宽度与整个圆相比的比例小于该值，则在图上删除该网格。若值小于 0，保留所有微小网格。
+  show.legend = FALSE, # 是否显示图例
+  legend.pos.x = 20, # 调整图例位置 x 坐标
+  legend.pos.y = 20 # 调整图例位置 y 坐标
+)
+
+# cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP")
+netAnalysis_signalingRole_network(cellchat,
+                                  signaling = 'TGFb', 
+                                  slot.name = "netP",
+                                  measure = c("outdeg", "indeg", "flowbet", "info"),
+                                  measure.name = c("Sender", "Receiver", "Mediator", "Influencer"),
+                                  color.use = NULL,
+                                  color.heatmap = "BuGn",
+                                  width = 20, height = 6, 
+                                  font.size = 15,
+                                  font.size.title = 20,
+                                  cluster.rows = FALSE,
+                                  cluster.cols = FALSE)
+
+netAnalysis_contribution(cellchat, 
+                         signaling = 'TGFb',
+                         # signaling.name = NULL,
+                         # sources.use = NULL,
+                         # targets.use = NULL,
+                         width = 0.1,
+                         # vertex.receiver = NULL,
+                         # thresh = 0.05,
+                         # return.data = FALSE,
+                         x.rotation = 0,
+                         title = "Contribution of Ligand-Recepter pair in TGF-β",
+                         font.size = 15,
+                         font.size.title = 20)  # OK
+```
+
+### ncWNT
+揭示的生物学意义
+1. 与TGFβ相比，对推断的ncWNT信号网络的CellChat分析揭示了其非常独特的非冗余结构，只有一个配体（Wnt5a）和一个成纤维细胞群（FIB-D）。主要驱动成纤维细胞到成纤维细胞、成纤维细胞到内皮细胞，成纤维细胞到髓系细胞的信号传导
+
+图片解释
+1. 推断出的ncWNT信令网络   @ netVisual_aggregate hierarchy
+2. 每个ncWNT配体-受体对的相对贡献  @ netAnalysis_signalingRole_network
+3. 计算出的ncWNT信令网络中心性度量  @ netAnalysis_contribution
+
+```{r,echo=TRUE,fig.width=12,fig.height=9,fig.align='center'}
+netVisual_aggregate(
+  cellchat, # CellChat 对象
+  signaling = 'ncWNT', # 信号通路的名称
+  thresh = 0.05, # 判断显著相互作用的 p 值阈值
+  vertex.receiver = seq(1,9), # 数值向量，定义在第一个层次图中作为目标的细胞群体索引
+  sources.use = NULL, # 向量，定义来源细胞群体的索引或名称
+  targets.use = NULL, # 向量，定义目标细胞群体的索引或名称
+  idents.use = NULL, # 向量，定义感兴趣的细胞群体的索引或名称
+  vertex.weight = cell_proportions, # 节点的权重：这里设置为细胞比例
+  weight.scale = TRUE, # 是否缩放边的权重
+  edge.width.max = 8, # 可视化中边的最大宽度
+  layout = c("hierarchy"), # 布局方式："hierarchy-层次"、"circle圆形"、"chord弦"或"spatial空间"
+  pt.title = 15, # 标题字体大小
+  title.space = 4, # 标题与图之间的间距
+  vertex.label.cex = 0.8, # 网络中节点标签的大小
+  alpha.image = 0.15, # 单个点的透明度
+  point.size = 1.5 # 点的大小
+)
+
+netAnalysis_signalingRole_network(cellchat,
+                                  signaling = 'ncWNT', 
+                                  slot.name = "netP",
+                                  measure = c("outdeg", "indeg", "flowbet", "info"),
+                                  measure.name = c("Sender", "Receiver", "Mediator", "Influencer"),
+                                  color.use = NULL,
+                                  color.heatmap = "BuGn",
+                                  width = 20, height = 6, 
+                                  font.size = 15,
+                                  font.size.title = 20,
+                                  cluster.rows = FALSE,
+                                  cluster.cols = FALSE)
+netAnalysis_contribution(cellchat, 
+                         signaling = 'ncWNT',
+                         # signaling.name = NULL,
+                         # sources.use = NULL,
+                         # targets.use = NULL,
+                         width = 0.1,
+                         # vertex.receiver = NULL,
+                         # thresh = 0.05,
+                         # return.data = FALSE,
+                         x.rotation = 0,
+                         title = "Contribution of Ligand-Recepter pair in ncWNT",
+                         font.size = 15,
+                         font.size.title = 20)  # OK
+
+
+netAnalysis_signalingRole_scatter(cellchat,
+                                  label.size = 5,
+                                  dot.alpha = 0.6,
+                                  xlabel = "Outgoing interaction strength",
+                                  ylabel = "Incoming interaction strength",
+                                  #title = NULL,
+                                  font.size = 15,  # font size of the text
+                                  font.size.title = 15,
+                                  do.label = T,
+                                  show.legend = T,
+                                  show.axes = T)  # font size of the title
+```
+
+
+## 多个细胞群和信号通路如何协调功能
+CellChat采用了一种基于非负矩阵分解的模式识别方法来识别全局通信模式，以及不同细胞组中的关键信号。
+该分析的输出是一组所谓的通信模式，这些模式在传出信号（将细胞视为发送者）或传入信号（将细胞视为接收者）的背景下将细胞组与信号通路连接起来。
+
+生物学意义
+1. outgoing模式的输出结果显示，大部分成纤维细胞的传出信号以模式 #4 为特征，该模式代表多种通路，包括但不限于 ncWNT、SPP2、MK 和 PROS。所有髓系细胞的传出信号都由模式 #2 表征，代表 TGFβ、TNF、CSF、IL2 和 RANKL 等通路。
+
+另一方面，靶细胞的通信模式显示，传入的成纤维细胞信号转导以#4和#1两种模式为主，包括TGFβ和ncWNT等信号通路，以及PDGF、TNF、MK和PTN等信号通路。大多数传入的髓系细胞信号转导以模式 #2 为特征，由 CSF 和 CXCL通路驱动。
+施万细胞的传入和传出信号都与伤口成纤维细胞具有相同的模式#1
+
+2. 同一组织中的两种不同细胞类型可以依赖于在很大程度上重叠的信号转导网络;
+
+3. 某些细胞类型，如成纤维细胞，同时激活多种信号模式和通路，而其他细胞类型，如髓系细胞或B细胞，依赖于更少和更均匀的通讯模式
+
+4. 交叉引用传出和传入信号模式还可以快速了解给定细胞类型的自分泌与旁分泌作用通路。
+伤口成纤维细胞之间的主要自分泌作用途径是MK、SEMA3、PROS和ncWNT，而髓系细胞到成纤维细胞的主要旁分泌作用途径是TGFβ和TNF
+
+图片解释
+1. 推断出的分泌细胞传出通信模式，显示了推断出的潜在模式与细胞群之间的对应关系，以及信号通路。
+   径流厚度表示细胞组或信号通路对每种潜在模式的贡献。
+2. 推断出的靶细胞的传入通信模式。
+
+
+```{r,echo=TRUE,fig.width=12,fig.height=9,fig.align='center'}
+library(NMF)
+library(ggalluvial)
+selectK(cellchat, pattern = "outgoing")
+nPatterns = 4 
+cellchat <- identifyCommunicationPatterns(cellchat, 
+                                          pattern = "outgoing", 
+                                          k = nPatterns,
+                                          heatmap.show = F,
+                                          title.legend = "Contributions",
+                                          width = 8,
+                                          height = 6,
+                                          font.size = 12)
+netAnalysis_river(cellchat, pattern = "outgoing")
+#netAnalysis_dot(cellchat, pattern = "outgoing")
+
+selectK(cellchat, pattern = "incoming")
+nPatterns = 4
+cellchat <- identifyCommunicationPatterns(cellchat,
+                                          pattern = "incoming",
+                                          k = nPatterns,
+                                          heatmap.show = F,
+                                          title.legend = "Contributions",
+                                          width = 8,
+                                          height = 6,
+                                          font.size = 12)
+netAnalysis_river(cellchat, pattern = "incoming")
+#netAnalysis_dot(cellchat, pattern = "incoming")
+```
+
+
+生物学意义
+1. CellChat能够量化所有重要信号通路之间的相似性，然后根据细胞通信网络的功能相似性或结构相似性进行分组。
+CellChat可以识别给定scRNA-seq数据集里的细胞间通信的关键特征，并预测尚不了解的信号通路的假定功能。
+通过识别与其他已知通路聚集在一起的未知通路，CellChat可以预测这些通路的假定功能。
+
+'By identifying poorly studied pathways that group together with other pathways, whose role is well known, this CellChat analysis can predict putative functions of the former.'
+
+2. 基于功能相似性分组，主要依赖发送单元组和接收单元组之间的相似性。
+基于结构相似性的分组，主要由信号网络的拓扑相似性所影响。
+
+3. 功能相似性分组的应用确定了四组信号通路。
+原文：
+第1组主要是炎症通路（如TGFβ、TNF、IL、CCL），主要代表从髓系和内皮细胞到成纤维细胞的旁分泌信号。
+第2组包括ncWNT、EGF、GAS和PROS通路，主要代表伤口成纤维细胞之间的自分泌信号。
+第3组包括CXCL和APELIN通路，代表来自内皮细胞的信号。
+第4组包括MK、PTN和SPP1通路，代表混杂的信号（即高连通性的信号），并由来自某些成纤维细胞群和髓系细胞的信号主导。
+
+代码复现：
+第1组包括ncWNT、GAS和PROS通路，主要代表伤口成纤维细胞之间的自分泌信号。
+第2组包括MK、PTN和SPP1通路，代表混杂的信号（即高连通性的信号），并由来自某些成纤维细胞群和髓系细胞的信号主导。
+第3组包括CXCL和APELIN通路，代表来自内皮细胞的信号。
+第4组主要是炎症通路（如TGFβ、CSF），主要代表从髓系和成纤维细胞的自分泌信号。
+
+
+
+4. 基于结构相似性的分组揭示了发送细胞和接收细胞如何利用给定的信号通路的一般模式。
+原文：
+结构相似性分组确定了xxx组信号通路。
+第yyy组表示具有多个/少个发送端senders和多个/少个接收端receivers的路径
+
+代码复现：
+结构相似性分组确定了4组信号通路。
+组1表示具有少量发送端和多个接收端的通路，如PROS、ANGPT、GAS和CXCL。
+组2表示具有多个发送端senders和多个接收端receivers的冗余通路，如EGF、MIF、MK、SPP1和PTN；
+组3表示具有相同发送端和接收端的通路，如KIT、PLAU、APELIN、RANKL和IL2；相关细胞类型之间或者同时具有多个发送端或接收端，或者仅含有极少数的发送端或接收端。
+组4表示具有多个发送端和多个接收端的冗余通路，如TGFβ，CSF、IGF和SEMA3；
+组2和组4感觉都是有多个发送端和接收端的通路，暂时没找到组间的较大差异。
+
+
+图片解释
+1. 根据功能相似性将信号通路投影到二维流形上。
+每个点代表一个信号通路的通信网络。点的大小与整体通信概率成正比。不同的颜色代表不同的信号通路组。
+2. 根据结构相似性将信号通路投影到二维流形上。
+
+```{r,echo=TRUE,fig.width=12,fig.height=9,fig.align='center'}
+cellchat <- computeNetSimilarity(cellchat, type = "functional")
+cellchat <- netEmbedding(cellchat, type = "functional")
+cellchat <- netClustering(cellchat, type = "functional")
+netVisual_embedding(cellchat,
+                    slot.name = "netP",
+                    type = "functional", 
+                    pathway.remove = NULL,
+                    pathway.remove.show = TRUE,
+                    label.size = 6,
+                    dot.alpha = 0.5,
+                    xlabel = "Dim 1",
+                    ylabel = "Dim 2",
+                    title = 'Functional classification of pathways',
+                    font.size = 10,
+                    font.size.title = 20,
+                    do.label = T,
+                    show.legend = T,
+                    show.axes = T)
+netVisual_embeddingZoomIn(cellchat,
+                          type = "functional", 
+                          nCol = 2,
+                          dot.size = c(2, 6),
+                          label.size = 5,
+                          dot.alpha = 0.5,
+                          xlabel = NULL,
+                          ylabel = NULL,
+                          do.label = T,
+                          show.legend = F,
+                          show.axes = T)
+
+```
+
+
+```{r,echo=TRUE,fig.width=12,fig.height=9,fig.align='center'}
+cellchat <- computeNetSimilarity(cellchat, type = "structural")
+cellchat <- netEmbedding(cellchat, type = "structural")
+cellchat <- netClustering(cellchat, type = "structural")
+netVisual_embedding(cellchat, 
+                    type = "structural",
+                    label.size = 6,
+                    dot.alpha = 0.5,
+                    pathway.remove = NULL,
+                    pathway.remove.show = TRUE,
+                    xlabel = "Dim 1",
+                    ylabel = "Dim 2",
+                    title = 'Structural classification of pathways',
+                    font.size = 10,
+                    font.size.title = 20,
+                    do.label = T,
+                    show.legend = T,
+                    show.axes = T)
+netVisual_embeddingZoomIn(cellchat,
+                          type = "structural",
+                          nCol = 2,
+                          label.size = 5,
+                          dot.alpha = 0.5,
+                          xlabel = NULL,
+                          ylabel = NULL,
+                          do.label = T,
+                          show.legend = F,
+                          show.axes = T)
+```
+
+
+### 结合层次图进行生物学意义阐释 @ Structural Similarity
+```{r,echo=TRUE,fig.width=12,fig.height=9,fig.align='center'}
+# 在 netVisual_aggregate 函数中，可以通过设置 vertex.weight 参数为代表细胞亚群比例的向量来实现图中圆圈的大小与相应的细胞亚群比例相对应
+# 获取每个细胞群体的细胞数量
+cell_counts <- table(cellchat@idents)
+# 计算每个细胞群体的比例
+cell_proportions <- cell_counts / sum(cell_counts)
+# 将细胞比例传递给 vertex.weight 参数
+netVisual_aggregate(
+  cellchat, # CellChat 对象
+  color.use = NULL, # 定义每个细胞群体颜色的字符向量
+  thresh = 0.05, # 判断显著相互作用的 p 值阈值
+  vertex.receiver = seq(1,9), # 数值向量，定义在第一个层次图中作为目标的细胞群体索引
+  sources.use = NULL, # 向量，定义来源细胞群体的索引或名称
+  targets.use = NULL, # 向量，定义目标细胞群体的索引或名称
+  idents.use = NULL, # 向量，定义感兴趣的细胞群体的索引或名称
+  top = 1, # 要显示的相互作用的比例
+  remove.isolate = FALSE, # 是否移除通讯网络中的孤立节点
+  vertex.weight = cell_proportions, # 节点的权重：这里设置为细胞比例
+  vertex.weight.max = NULL, # 节点权重的最大值；默认是 max(vertex.weight)
+  vertex.size.max = NULL, # 可视化中节点的最大尺寸
+  weight.scale = TRUE, # 是否缩放边的权重
+  edge.weight.max = NULL, # 边的最大权重；默认是 max(net)
+  edge.width.max = 8, # 可视化中边的最大宽度
+  layout = c("hierarchy"), # 布局方式："hierarchy-层次"、"circle圆形"、"chord弦"或"spatial空间"
+  pt.title = 15, # 标题字体大小
+  title.space = 4, # 标题与图之间的间距
+  vertex.label.cex = 0.8, # 网络中节点标签的大小
+  sample.use = NULL, # 用于可视化的样本，应是 'object@meta$samples' 中的元素
+  alpha.image = 0.15, # 单个点的透明度
+  point.size = 1.5, # 点的大小
+  group = NULL, # 用于制作多组弦图的命名组标签
+  cell.order = NULL, # 定义细胞类型顺序（扇区顺序）的字符向量
+  small.gap = 1, # 扇区之间的小间隙
+  big.gap = 10, # 由 'group' 参数定义的不同扇区组之间的间隙
+  scale = FALSE, # 缩放每个扇区为相同宽度；默认是 FALSE；如果 remove.isolate = TRUE，设置为 TRUE
+  reduce = -1, # 如果某个网格的宽度与整个圆相比的比例小于该值，则在图上删除该网格。若值小于 0，保留所有微小网格。
+  show.legend = FALSE, # 是否显示图例
+  legend.pos.x = 20, # 调整图例位置 x 坐标
+  legend.pos.y = 20, # 调整图例位置 y 坐标
+  signaling.name = NULL, # 可选的信号通路名称，用于在图中显示
+  signaling = 'PLAU' # 信号通路的名称
+)
+
+
+```
+
+
+```{r,echo=TRUE}
+# saveRDS(cellchat, file = "GSE113854_CellChat_Secreted Signaling.rds")
+sessionInfo()
+```
+
+
