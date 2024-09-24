@@ -1,0 +1,802 @@
+---
+title: "Bulk_seq_of_gut_2_group_20240724"  
+author: "Deng Xin yin"  
+output:
+  html_document:
+    theme: united  
+    df_print: kable  
+    toc: true  
+    toc_depth: 2  
+    toc_float: true 
+date: '2024-07-24'  
+---
+
+```{r setup, include=FALSE}
+all_times <- list()  
+knitr::knit_hooks$set(time_it = local({
+  now <- NULL
+  function(before, options) {
+    if (before) {
+      now <<- Sys.time()
+    } else {
+      res <- difftime(Sys.time(), now, units = "secs")
+      all_times[[options$label]] <<- res
+    }
+  }
+}))
+knitr::opts_chunk$set(
+  tidy = TRUE,  
+  tidy.opts = list(width.cutoff = 95),  
+  message = FALSE,  
+  warning = FALSE,  
+  time_it = TRUE,  
+  error = TRUE  
+)
+```
+
+
+# 感谢 @ 王丹阳 大佬的帮助与支持！
+1. Bulk_seq上游比对文件由 @ 王丹阳 师姐提供，文件路径为：
+"/home/wangdy/RNA-seq_wl/results/gut_2group/gut_2group_feature_counts.txt"
+2. Bulk_seq分析流程参考代码：
+/home/wangdy/black_rice_delay_ovary_aging/BvsP_ovary_RNAseq/BvsP_ovary_RNAseq.R
+
+
+```{r,echo=FALSE}
+# 如果有R包或者网络问题，可以从以下提取必要文件
+load("gut_2_group_results.rda")
+load("gut_2_group_tpm.rda")
+```
+
+# 数据读取 
+```{r,echo=TRUE}
+# cd /home/wangdy/RNA-seq_wl/results/gut_2group/
+# cp /home/wangdy/RNA-seq_wl/results/gut_2group/* /home/dengxy/Bulk_seq_20240724/  # 仅复制文件，不保留文件夹
+# cd /home/dengxy/Bulk_seq_20240724/
+  
+# BiocManager::install(c("DESeq2", "biomaRt", "ggplot2", "pheatmap", "EnhancedVolcano"))
+library(DESeq2)
+library(biomaRt)
+library(ggplot2)
+library(pheatmap)
+library(EnhancedVolcano)
+
+setwd('/home/dengxy/Bulk_seq_20240724/')
+gut_2_group <-read.table("gut_2group_feature_counts.txt",header = TRUE,row.names = 1)[,c(6:11)]
+colnames(gut_2_group) <- sapply(strsplit(colnames(gut_2_group), "[.]"), 
+                                function(x) paste(x[10], x[11], sep = "_"))
+library(stringr)
+# 提取 gut_2_group 的列名信息，并以 '_' 为分隔符取第一个字符作为 'group' 组
+meta_info <- data.frame(
+  Sample_id = colnames(gut_2_group),
+  Group = unlist(lapply(strsplit(colnames(gut_2_group), "_"), "[[", 1))
+  )
+
+head(gut_2_group,5)
+meta_info
+```
+
+# PCA 聚类 
+```{r,echo=TRUE,fig.height=6,fig.width=8,fig.align='center'}
+# 过滤掉所有样本中总计数为0的基因
+counts_1 <- gut_2_group[apply(gut_2_group, 1, sum) > 0, ]
+# 转置矩阵使样本在行上，基因在列上
+counts_1_t <- t(counts_1)
+
+# 去除方差为零的基因（列）
+counts_1_t <- counts_1_t[, apply(counts_1_t, 2, var) != 0]
+
+# 对过滤后的计数矩阵进行主成分分析（PCA），转置矩阵使样本在行上，基因在列上
+all_sample_pca <- prcomp(counts_1_t, center = TRUE, scale. = TRUE)
+
+# 提取PCA结果中的主成分得分矩阵并转换为数据框
+pca_table <- as.data.frame(all_sample_pca$x)
+
+# 从样本名中提取前四个字符作为分组信息，并添加到pca_table的新列group中
+# pca_table$group = str_sub(rownames(pca_table), 1, 4)
+
+pca_table$group = unlist(lapply(strsplit(colnames(gut_2_group), "_"), "[[", 1))
+
+# 提取每个主成分的标准差并计算方差
+pca.var <- all_sample_pca$sdev^2
+
+# 计算每个主成分的方差占总方差的百分比，并四舍五入保留两位小数
+pca.var.per <- round(pca.var / sum(pca.var) * 100, 2)
+
+library(ggplot2)
+PCA_res <- ggplot(pca_table,
+       aes(x=PC1,y=PC2,color=group))+
+  geom_point(size = 6)+
+  theme_bw()+
+  xlab(paste("PC1 - ", pca.var.per[1], "% variance", sep=""))+
+  ylab(paste("PC2 - ", pca.var.per[2], "% variance", sep=""))+
+  guides(color=guide_legend(title = "Group"))+
+  theme(axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        legend.title = element_text(size = 16),
+        legend.text = element_text(size = 16),
+        axis.text = element_text(size = 14)  # 修改坐标轴刻度标签的字体大小
+        )
+PCA_res
+ggsave("001_pca.pdf", plot = PCA_res, width = 10,height = 8)
+```
+
+
+# 获取小鼠基因信息(From Ensembl 数据库) 
+```{r,echo=FALSE}
+library(biomaRt)
+library(readr)
+
+# 获取基因信息
+get_gene_info <- function() {
+  ensembl <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+  gene_attributes <- c("ensembl_gene_id", "external_gene_name", "gene_biotype")
+  gene_info <- getBM(attributes = gene_attributes, mart = ensembl)
+  colnames(gene_info) <- c("Ensembl_id", "Symbol", "Gene_type")
+  return(gene_info)
+}
+
+# 获取并保存基因信息
+gene_info <- get_gene_info()
+
+# 查看列名以确保没有问题
+print(colnames(gene_info))
+
+# 去除有缺失值和空字符的行
+gene_info <- gene_info %>%
+  dplyr::filter(!is.na(`Ensembl_id`) & `Ensembl_id` != "" & 
+                !is.na(`Symbol`) & `Symbol` != "" & 
+                !is.na(`Gene_type`) & `Gene_type` != "")
+
+# 保存为以制表符分隔的 .csv 文件
+# write.table(gene_info, "mouse_gene_info.csv", sep = "\t", row.names = FALSE, quote = FALSE)
+
+
+# 检查 gene_info 数据
+head(gene_info)
+
+```
+
+# 差异分析+通路富集分析
+```{r,echo=TRUE,fig.height=6,fig.width=8,fig.align='center'}
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(DOSE)
+library(DESeq2)
+
+meta_info <- data.frame(
+  Sample_id = colnames(gut_2_group),
+  Group = unlist(lapply(strsplit(colnames(gut_2_group), "_"), "[[", 1))
+)
+
+dds <- DESeqDataSetFromMatrix(countData = gut_2_group, 
+                              colData = meta_info, 
+                              design = ~ Group)
+
+# 过滤 dds 对象中的基因，保留那些在所有样本中的总计数大于1的基因。
+# 去除在所有样本中计数非常低或完全没有表达的基因，从而减少噪音，提高分析的质量
+dds <- dds[rowSums(counts(dds)) > 1, ]
+# 差异表达分析
+dds <- DESeq(dds)
+
+normalized_counts <- counts(dds,normalized=T)
+normalized_mean_counts = t(apply(normalized_counts,1,function(a){tapply(a,meta_info$Group,mean)}))
+
+enrich_go_kegg<-function(gene_id){
+  result<-list()
+  
+  ensembl_2_entrezid<-bitr(gene_id,fromType ="ENSEMBL", toType = c("ENTREZID","SYMBOL"), OrgDb = org.Mm.eg.db)
+  
+  ego_ALL <- enrichGO(gene = ensembl_2_entrezid$ENTREZID,
+                      OrgDb=org.Mm.eg.db,
+                      keyType = "ENTREZID",
+                      ont = "ALL",
+                      pAdjustMethod = "BH",
+                      minGSSize = 1,
+                      pvalueCutoff = 0.05,
+                      qvalueCutoff = 0.05,
+                      readable = TRUE)
+  
+  result$ego_all<-as.data.frame(ego_ALL)
+  #kegg_id<-bitr_kegg(ensembl_2_entrezid$ENTREZID,fromType = "ncbi-geneid",toType = "kegg",organism = "mmu")
+  
+  kegg<-enrichKEGG(gene = ensembl_2_entrezid$ENTREZID,organism = "mmu", keyType = "kegg",pAdjustMethod = "BH",pvalueCutoff = 1,qvalueCutoff = 1)
+  
+  result$kegg<-kegg@result
+  
+  result$kegg_ALL<-kegg
+  
+  result$ego_ALL<-ego_ALL
+  
+  return(result)
+}
+
+# 读取文件 "gene_name_type" 并创建数据框，列名为 "Ensembl_id", "Symbol", "Gene_type"
+gene_name_type <- read.table("mouse_gene_info.csv", col.names = c("Ensembl_id", "Symbol", "Gene_type"))
+
+# 将数据框的行名设置为基因的 Ensembl ID
+rownames(gene_name_type) <- gene_name_type$Ensembl_id
+
+# 获取差异分析结果，并去除包含 NA 的行，contrast 参数指定比较的组，cooksCutoff = FALSE 表示不进行 Cook's 距离过滤
+res_Medium_supernatant <- na.omit(as.data.frame(results(dds, 
+                                             contrast = c("Group", "Medium", "supernatant"), 
+                                             cooksCutoff = FALSE)))
+
+# 将归一化的平均计数值合并到差异分析结果中
+res_Medium_supernatant <- cbind(res_Medium_supernatant, 
+                                normalized_mean_counts[rownames(res_Medium_supernatant), c("Medium", "supernatant")])
+
+# 根据 p 值和 log2FoldChange 设定分组标签，p 值小于 0.05 且绝对值 log2FoldChange 大于等于 1 为显著差异
+res_Medium_supernatant$group <- ifelse(res_Medium_supernatant$pvalue < 0.05 & abs(res_Medium_supernatant$log2FoldChange) >= 1,
+                            ifelse(res_Medium_supernatant$log2FoldChange > 0, "Medium", "supernatant"), "No-sig")
+
+# 将基因名和基因类型信息合并到差异分析结果中
+res_Medium_supernatant <- cbind(res_Medium_supernatant, gene_name_type[rownames(res_Medium_supernatant), ])
+
+# 统计每个分组标签的基因数目
+table(res_Medium_supernatant$group)
+# Medium      No-sig supernatant 
+# 237       17286         373 
+
+
+
+
+### Medium
+Medium <- subset(res_Medium_supernatant,
+             res_Medium_supernatant$group=="Medium")%>%rownames()
+enrich_Medium <- enrich_go_kegg(Medium)
+# Warning message:
+#   In bitr(gene_id, fromType = "ENSEMBL", toType = c("ENTREZID", "SYMBOL"),  :
+#             17.3% of input gene IDs are fail to map...
+enrich_Medium_ego <- enrich_Medium$ego_all
+enrich_Medium_kegg <- enrich_Medium$kegg
+
+
+
+
+### supernatant
+supernatant <- subset(res_Medium_supernatant,
+               res_Medium_supernatant$group=="supernatant")%>%rownames()
+enrich_supernatant <- enrich_go_kegg(supernatant)
+# Warning message:
+#   In bitr(gene_id, fromType = "ENSEMBL", toType = c("ENTREZID", "SYMBOL"),  :
+#             21.72% of input gene IDs are fail to map...
+enrich_supernatant_ego<-enrich_supernatant$ego_all
+enrich_supernatant_kegg<-enrich_supernatant$kegg
+
+```
+
+# 保存分析结果到 rda 文件中 
+```{r,echo=TRUE}
+# save(gut_2_group, dds, res_Medium_supernatant,
+#      enrich_Medium_ego, enrich_Medium_kegg,
+#      enrich_supernatant_ego, enrich_supernatant_kegg,
+#      file = "gut_2_group_results.rda")
+# load("gut_2_group_results.rda")
+```
+
+# 火山图 @ 组间差异基因
+```{r,echo=TRUE,fig.height=8,fig.width=10,fig.align='center'}
+# load("gut_2_group_results.rda")
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+
+# 读取并处理数据
+res_Medium_supernatant <- na.omit(res_Medium_supernatant)
+rownames(res_Medium_supernatant) <- res_Medium_supernatant$Ensembl_id
+
+# 筛选出每组最显著的 top 10 基因
+top_genes <- res_Medium_supernatant %>%
+  filter(group %in% c("Medium", "supernatant")) %>%
+  arrange(pvalue) %>%
+  group_by(group) %>%
+  slice_head(n = 5) %>%
+  ungroup()
+
+# 绘制火山图
+volcano_res <- ggplot(res_Medium_supernatant, aes(x = log2FoldChange, y = -log10(pvalue))) +
+  geom_point(aes(color = group), alpha = 0.5, size = 1) +
+  theme_classic(base_size = 16) +
+  xlim(-20, 20) +
+  #ggrepel::geom_label_repel(
+  ggrepel::geom_text_repel(  
+    data = top_genes,
+    aes(label = Symbol),
+    color = "black",
+    direction = "both",
+    force = 2,
+    nudge_x = 0.5,
+    point.padding = NA,
+    nudge_y = 0.5,
+    segment.ncp = 0.1,
+    segment.angle = 20,
+    max.overlaps = 50
+  ) +
+  labs(
+    title = "Volcano Plot of Medium and Supernatant Groups",
+    x = "log2 Fold Change",
+    y = "-log10 p-value"
+  )+
+  theme(aspect.ratio = 0.7,
+        # 标题居中
+        plot.title = element_text(hjust = 0.5,size = 15,face = "bold"),
+        axis.text = element_text(color = 'black',size=15,face = "bold"),
+        axis.title.x  = element_text(color = 'black',size=15,face = "bold"),
+        axis.title = element_text(color = 'black'),
+        axis.title.y   = element_text(color = 'black',size=15,face = "bold"),
+        legend.text = element_text(size=12,face = "bold"),
+        legend.background = element_rect(fill = "transparent"),
+        #legend.position = "top"
+        #legend.position = c(1.3,0.5)
+  ) +
+  scale_color_manual(name = '',
+                     values = c('Medium'="#0072C1",
+                                'No-sig'='grey',
+                                'supernatant'="#9F1326"),
+                     label = c('Medium'='Medium (num=237)',
+                               'No-sig'='No-sig (num=17263)',
+                               'supernatant'='supernatant (num=370)')) +
+  # 阈值分割线
+  geom_hline(yintercept = -log10(0.05),lty = 'dashed',size = 0.5) +
+  geom_vline(xintercept = c(-1,1),lty = 'dashed',size = 0.5) +
+  ggtitle('Medium VS supernatant')+
+  geom_segment(
+    data = top_genes,
+    aes(x = log2FoldChange, y = -log10(pvalue),
+        xend = log2FoldChange + 0.4, yend = -log10(pvalue) + 0.4),
+    arrow = arrow(length = unit(0.01, "npc")),  # 添加箭头
+    color = "black"
+  )
+
+print(volcano_res)
+
+ggsave("002_volcano_res_Medium_supernatant.pdf",plot = volcano_res, width = 12,height = 9)
+```
+
+# GO @ Supernatant + Medium  
+```{r,echo=TRUE,fig.height=10,fig.width=16,fig.align='center'}
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(AnnotationDbi)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(stringr)
+
+# 定义一个函数来处理 GO 分析
+process_go_analysis <- function(enrich_object, org_db, ont = "BP", pAdjustMethod = "BH", qvalueCutoff = 0.05) {
+  # 按 p 值排序并筛选 top 10 结果
+  top10_enrich <- enrich_object %>%
+    arrange(pvalue) %>%
+    slice_head(n = 10)
+  
+  # 提取基因ID并转换为ENSEMBL格式
+  genes <- unlist(strsplit(top10_enrich$geneID, "/"))
+  ensembl_ids <- mapIds(org_db, keys = genes, column = "ENSEMBL", keytype = "SYMBOL", multiVals = "first")
+  
+  # 移除 NA 值
+  ensembl_ids <- na.omit(ensembl_ids)
+  
+  # 使用 clusterProfiler 进行 GO 分析
+  ego_result <- enrichGO(gene = ensembl_ids,
+                         OrgDb = org_db,
+                         keyType = "ENSEMBL",
+                         ont = ont,
+                         pAdjustMethod = pAdjustMethod,
+                         qvalueCutoff = qvalueCutoff)
+  
+  # 仅保留前 10 个显著 GO 术语，并按 p 值从小到大排序
+  ego_result@result <- ego_result@result %>%
+    arrange(pvalue) %>%
+    slice_head(n = 10)
+  
+  return(ego_result)
+}
+
+ego_result_supernatant <- process_go_analysis(enrich_supernatant_ego, org.Mm.eg.db)
+ego_result_medium <- process_go_analysis(enrich_Medium_ego, org.Mm.eg.db)
+
+# 将 Description 列进行自动换行处理
+ego_result_supernatant@result$Description <- str_wrap(ego_result_supernatant@result$Description, width = 30)
+ego_result_medium@result$Description <- str_wrap(ego_result_medium@result$Description, width = 30)
+
+# 在 ggplot2 图中，GO 术语是按 p 值从大到小排列的，
+# 这是因为 reorder(Description, pvalue) 按照 p 值从小到大对 GO 术语进行排序，
+# 但在 coord_flip() 之后，这种排序在图中表现为从大到小排列。
+# 为了使图中的 GO 术语按照 p 值从小到大显示，我们需要对 Description 列进行反向排序
+
+
+
+# 使用 ggplot2 直接绘制图像
+p1 <- ggplot(ego_result_supernatant@result, aes(x = reorder(Description, -pvalue), y = -log10(pvalue))) + # 使用 -pvalue 进行反向排序
+  geom_point(aes(size = -log10(pvalue), color = pvalue)) +
+  scale_color_gradient(low = "red", high = "blue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Top 10 GO terms - Supernatant", x = "GO Term", y = "-log10(pvalue)") +
+  theme(plot.title = element_text(hjust = 0.5, size = 16, color = "black"),
+        axis.text = element_text(size = 14, color = "black"),
+        axis.title = element_text(size = 14, color = "black"),
+        legend.title = element_text(size = 14, color = "black"),
+        legend.text = element_text(size = 12, color = "black"),
+        aspect.ratio = 2.3)  # 设置纵横比
+
+p2 <- ggplot(ego_result_medium@result, aes(x = reorder(Description, -pvalue), y = -log10(pvalue))) + # 使用 -pvalue 进行反向排序
+  geom_point(aes(size = -log10(pvalue), color = pvalue)) +
+  scale_color_gradient(low = "red", high = "blue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Top 10 GO terms - Medium", x = "GO Term", y = "-log10(pvalue)") +
+  theme(plot.title = element_text(hjust = 0.5, size = 16, color = "black"),
+        axis.text = element_text(size = 14, color = "black"),
+        axis.title = element_text(size = 14, color = "black"),
+        legend.title = element_text(size = 14, color = "black"),
+        legend.text = element_text(size = 12, color = "black"),
+        aspect.ratio = 2.3)  # 设置纵横比
+
+# 合并图像
+combined_plot <- grid.arrange(p1, p2, ncol = 2)
+combined_plot
+# 保存图像，并设置输出大小
+ggsave("003_GO_result_of_medium_and_supernatant.pdf", plot = combined_plot, width = 16, height = 8, dpi = 300)
+```
+
+# KEGG @ supernatant + Medium 
+```{r,echo=TRUE,fig.height=10,fig.width=16,fig.align='center'}
+library(dplyr)
+library(ggplot2)
+library(stringr)
+
+# 定义处理 KEGG 分析的函数，输入为 data.frame
+process_kegg_analysis <- function(enrich_object, top_n = 10) {
+  # 按 p 值排序并选择前 top_n 个结果
+  top_enrich <- enrich_object %>%
+    arrange(pvalue) %>%
+    slice_head(n = top_n)
+  
+  # 分割 Description 列，并去除 "Mus musculus (house mouse)"
+  top_enrich$Description <- unlist(lapply(strsplit(top_enrich$Description, " - "), function(x) {
+    desc <- x[1]
+    str_remove(desc, "Mus musculus \\(house mouse\\)")
+  }))
+  
+  # 添加自动换行的代码
+  top_enrich$Description <- str_wrap(top_enrich$Description, width = 30)
+  
+  return(top_enrich)
+}
+
+# 假设 enrich_supernatant_kegg 和 enrich_Medium_kegg 已经存在
+kegg_result_supernatant <- process_kegg_analysis(enrich_supernatant_kegg)
+kegg_result_medium <- process_kegg_analysis(enrich_Medium_kegg)
+
+### 画柱状图
+p3 <- ggplot(kegg_result_supernatant, aes(x = reorder(Description, -pvalue), y = -log10(pvalue))) +
+  geom_bar(stat = "identity", fill = "red") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Top 10 KEGG Pathways - Supernatant", x = "KEGG Pathway", y = "-log10(pvalue)") +
+  theme(# 标题居中
+    plot.title = element_text(hjust = 0.5,size = 15),
+    axis.text = element_text(color = 'black',size=12),
+    axis.title.x  = element_text(color = 'black',size=12),
+    axis.title = element_text(color = 'black'),
+    axis.title.y   = element_text(color = 'black',size=12),
+    legend.text = element_text(size=12),
+    legend.title = element_text(size=12), # face = "bold"
+    aspect.ratio = 2)  # 设置纵横比
+
+p4 <- ggplot(kegg_result_medium, aes(x = reorder(Description, -pvalue), y = -log10(pvalue))) +
+  geom_bar(stat = "identity", fill = "red") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Top 10 KEGG Pathways - Medium", x = "KEGG Pathway", y = "-log10(pvalue)") +
+  theme(# 标题居中
+    plot.title = element_text(hjust = 0.5,size = 15),
+    axis.text = element_text(color = 'black',size=12),
+    axis.title.x  = element_text(color = 'black',size=12),
+    axis.title = element_text(color = 'black'),
+    axis.title.y   = element_text(color = 'black',size=12),
+    legend.text = element_text(size=12),
+    legend.title = element_text(size=12),
+    aspect.ratio = 2)  # 设置纵横比
+
+# 合并图像
+library(gridExtra)
+combined_plot <- grid.arrange(p3, p4, ncol = 2)
+combined_plot
+# 保存图像，并设置输出大小
+# ggsave("004_KEGG_result_of_medium_and_supernatant_with_bar_plot.png", plot = combined_plot, width = 16, height = 8)
+
+### 画点图
+p5 <- ggplot(kegg_result_supernatant, aes(x = reorder(Description, -pvalue), y = -log10(pvalue))) +
+  geom_point(aes(size = -log10(pvalue), color = pvalue)) +
+  scale_color_gradient(low = "red", high = "blue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Top 10 KEGG Pathways - Supernatant", x = "KEGG Pathway", y = "-log10(pvalue)") +
+  theme(plot.title = element_text(hjust = 0.5, size = 16, color = "black"),
+        axis.text = element_text(size = 14, color = "black"),
+        axis.title = element_text(size = 14, color = "black"),
+        legend.title = element_text(size = 14, color = "black"),
+        legend.text = element_text(size = 12, color = "black"),
+        aspect.ratio = 2)  # 设置纵横比
+
+p6 <- ggplot(kegg_result_medium, aes(x = reorder(Description, -pvalue), y = -log10(pvalue))) +
+  geom_point(aes(size = -log10(pvalue), color = pvalue)) +
+  scale_color_gradient(low = "red", high = "blue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Top 10 KEGG Pathways - Medium", x = "KEGG Pathway", y = "-log10(pvalue)") +
+  theme(plot.title = element_text(hjust = 0.5, size = 16, color = "black"),
+        axis.text = element_text(size = 14, color = "black"),
+        axis.title = element_text(size = 14, color = "black"),
+        legend.title = element_text(size = 14, color = "black"),
+        legend.text = element_text(size = 12, color = "black"),
+        aspect.ratio = 2)  # 设置纵横比
+
+# 合并图像
+library(gridExtra)
+combined_plot <- grid.arrange(p5, p6, ncol = 2)
+combined_plot
+# 保存图像，并设置输出大小和纵横比
+ggsave("004_KEGG_result_of_medium_and_supernatant.pdf", plot = combined_plot, width = 16, height = 8, dpi = 300)
+
+```
+
+# TPM（Transcripts Per Million）标准化 
+```{r,echo=TRUE}
+# 计算TPM 
+# load("gut_2_group_results.rda")
+gene_length<-read.table("gut_2group_feature_counts.txt",header = TRUE,row.names = 1)[rownames(gut_2_group),"Length"]
+
+# TPM 函数体
+counts2TPM <- function(count, efflength){
+  RPK <- count/(efflength/1000)   #每千碱基reads (reads per kilobase) 长度标准化
+  PMSC_rpk <- sum(RPK)/1e6        #RPK的每百万缩放因子 (“per million” scaling factor ) 深度标准化
+  RPK/PMSC_rpk
+}
+
+gut_2_group_tpm <- as.data.frame(apply(gut_2_group, 2, counts2TPM, efflength=gene_length))
+
+colnames(gut_2_group_tpm)
+# "Medium_1"      "Medium_2"      "Medium_3"      "supernatant_1" "supernatant_2" "supernatant_3"
+cor_table<-cor(gut_2_group_tpm,method = "spearman")
+#pdf(file = "001_cor_heatmap.pdf",width = 6,height = 5)
+pheatmap::pheatmap(cor_table)
+#dev.off()
+
+# 在 gut_2_group_tpm 中加上对应的基因名 mgi_symbol --------------------------
+# 加载必要的包
+library(dplyr)
+library(biomaRt)
+library(tibble) 
+
+# 使用biomaRt包连接到Ensembl数据库
+mart <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+
+# 提取Ensembl IDs
+ensembl_ids <- rownames(gut_2_group_tpm)
+
+# 使用getBM函数从Ensembl数据库中获取基因符号
+genes <- getBM(
+  filters = "ensembl_gene_id",
+  attributes = c("ensembl_gene_id", "mgi_symbol"),
+  values = ensembl_ids,
+  mart = mart
+)
+
+# 将结果转换为数据框
+genes <- as.data.frame(genes)
+
+# 添加Ensembl_id列
+gut_2_group_tpm$Ensembl_id <- rownames(gut_2_group_tpm)
+
+# 合并数据框并处理重复的行名
+gut_2_group_tpm <- gut_2_group_tpm %>%
+  left_join(genes, by = c("Ensembl_id" = "ensembl_gene_id")) %>%
+  distinct(Ensembl_id, .keep_all = TRUE)
+
+# 将Ensembl_id设置为行名
+rownames(gut_2_group_tpm) <- gut_2_group_tpm$Ensembl_id
+
+# 查看结果
+# print(gut_2_group_tpm)
+
+```
+
+
+# 进行T检验并过滤P值 
+```{r,echo=TRUE}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggsignif)
+
+# 过滤掉无法进行t检验的数据行
+gut_2_group_tpm <- gut_2_group_tpm %>%
+  rowwise() %>%
+  filter(sum(!is.na(c_across(starts_with("Medium")))) >= 2 & sum(!is.na(c_across(starts_with("supernatant")))) >= 2) %>%
+  ungroup()
+
+# 计算 P 值并更新数据框
+gut_2_group_tpm <- gut_2_group_tpm %>%
+  rowwise() %>%
+  mutate(P_value = t.test(c_across(starts_with("Medium")), c_across(starts_with("supernatant")))$p.value) %>%
+  ungroup()
+rownames(gut_2_group_tpm) <- gut_2_group_tpm$Ensembl_id
+
+gut_2_group_tpm_T_test_filtered <- gut_2_group_tpm %>%
+  filter(!is.na(P_value))   %>%    # 删除 P_value_T_test 列为 NaN 的行
+  filter(P_value < 0.001) %>%   # 保留 P_value_T_test 结果小于 0.001 的所有行
+  arrange(P_value)  # 按 P_value_T_test 值从小到大进行排列
+rownames(gut_2_group_tpm_T_test_filtered) <- gut_2_group_tpm_T_test_filtered$Ensembl_id
+
+# 将结果输出为 CSV 文件
+# write.csv(gut_2_group_tpm, "gut_2_group_tpm_with_T_test.csv", row.names = FALSE)
+# write.csv(gut_2_group_tpm_T_test_filtered, "gut_2_group_tpm_with_T_test_filtered.csv", row.names = FALSE)
+
+# save(genes, gut_2_group_tpm, gut_2_group_tpm_T_test_filtered, file = "gut_2_group_tpm.rda")
+# load("gut_2_group_tpm.rda")
+
+head(gut_2_group_tpm,5)
+head(gut_2_group_tpm_T_test_filtered,5)
+```
+
+# 自定义感兴趣的基因集
+比如此前筛选的组间差异基因，各选前20个差异基因进行组间T检验
+```{r,echo=TRUE}
+# top_genes
+gene_list <- res_Medium_supernatant %>%
+  filter(group %in% c("Medium", "supernatant")) %>%
+  arrange(pvalue) %>%
+  group_by(group) %>%
+  slice_head(n = 20) %>%
+  ungroup()
+
+# 筛选 gene_list 中与 gut_2_group_tpm 存在共同基因的基因名
+common_genes <- intersect(gene_list$Ensembl_id, gut_2_group_tpm$Ensembl_id)
+# common_genes
+```
+
+# 差异基因比较
+```{r,echo=TRUE,fig.width=20,fig.height=20,fig.align='center'}
+# 加载必要的包
+library(reshape2)  # 用于将数据从宽格式转换为长格式
+library(dplyr)     # 用于数据操作
+library(ggplot2)   # 用于数据可视化
+library(ggsignif)  # 用于在图中添加显著性标记
+library(cowplot)   # 用于组合多个图表
+
+# 筛选 gene_list 中与 gut_2_group_tpm 存在共同基因的基因名
+common_genes <- intersect(gene_list$Ensembl_id, gut_2_group_tpm$Ensembl_id)
+
+if (length(common_genes) == 0) {
+  stop("没有共同基因")
+} else {
+  # 过滤 gene_list，只保留存在于 gut_2_group_tpm 中的基因
+  gene_list <- gene_list[gene_list$Ensembl_id %in% common_genes, ]
+}
+
+# 定义一个函数来处理和绘制单个基因的数据
+plot_gene_expression <- function(gene_id, gene_name, data) {
+  selected_columns <- grep("Medium|supernatant", colnames(data))  # 查找包含 "Medium" 或 "supernatant" 的列
+  gene_data <- data[gene_id, selected_columns, drop = FALSE]  # 提取指定基因的数据
+  
+  # 移除非有限值
+  gene_data <- gene_data[, colSums(is.na(gene_data)) == 0]
+  
+  if (ncol(gene_data) == 0) {
+    return(NULL)  # 如果没有有效数据，返回NULL
+  }
+  
+  gene_data <- as.data.frame(t(gene_data))  # 转置并转换为数据框
+  gene_data$Sample <- rownames(gene_data)  # 添加样本列名
+  colnames(gene_data)[1] <- "TPM"  # 重命名数据列为 "TPM"
+  
+  # 转换数据格式
+  gene_data_melted <- melt(gene_data, id.vars = "Sample")  # 将数据从宽格式转换为长格式
+  gene_data_melted$Group <- ifelse(grepl("Medium", gene_data_melted$Sample), "Medium", "supernatant")  # 添加分组列
+  
+  # 确保 Group 列的值与手动设置的填充颜色匹配
+  gene_data_melted$Group <- factor(gene_data_melted$Group, levels = c("Medium", "supernatant"))
+  
+  # 计算 t 检验的 p 值
+  t_test_result <- t.test(value ~ Group, data = gene_data_melted)
+  p_value <- t_test_result$p.value
+  
+  # 检查 p 值是否有效，并仅在 p 值显著时返回图表对象
+  if (!is.na(p_value) && p_value < 0.05) {
+    print(paste(gene_name, "有显著性差异，T检验p 值为", p_value))  # 打印显著性差异的基因名称和p值
+    
+    # 绘制图表
+    gene_plot <- ggplot(gene_data_melted, aes(x = Group, y = value)) +  # 创建 ggplot 对象
+      geom_boxplot(aes(fill = Group), alpha = 0.7) +  # 添加箱线图
+      scale_fill_manual(values = c('Medium' = "#0072C1", 'supernatant' = "#9F1326")) +  # 设置组颜色
+      theme_classic() +  # 使用经典主题
+      xlab("") + ylab("TPM") + ggtitle(gene_name) +  # 设置标签和标题
+      theme(
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold", vjust = 1),  # 调整标题大小
+        axis.text = element_text(color = 'black', size = 14, face = "bold"),  # 调整坐标文字大小
+        axis.title.y = element_text(color = 'black', size = 14, face = "bold"),  # 调整y轴标签大小
+        legend.text = element_text(size = 14, face = "bold"),  # 调整图例文字大小
+        legend.background = element_rect(fill = "transparent"),  # 图例背景透明
+        legend.title = element_text(size = 14, face = "bold"),  # 调整图例标题大小
+        legend.position = "right",  # 图例位置右侧
+        axis.text.x = element_blank(),  # 移除x轴标签
+        axis.ticks.x = element_blank(),  # 移除x轴刻度
+        panel.background = element_rect(fill = "transparent"),  # 设置面板背景透明
+        plot.background = element_rect(fill = "transparent", color = NA)  # 设置图表背景透明
+      ) +
+      geom_signif(
+        comparisons = list(c("Medium", "supernatant")),  # 添加显著性标记
+        map_signif_level = TRUE,                         # 显著性水平映射为星号
+        textsize = 4,                                    # 显著性标记的文本大小
+        test = "t.test",                                 # 使用 t 检验来计算显著性
+        tip_length = 0,                                  # 调整显著性标记线条的长度
+        y_position = max(gene_data_melted$value, na.rm = TRUE) * 1  # 调整显著性标记位置
+      ) +
+      annotate("text", x = 1.5, y = max(gene_data_melted$value, na.rm = TRUE) * 1.3, 
+               label = paste("p =", round(p_value, 4)), size = 5, color = "black", fontface = "bold")  # 添加p值标注
+    
+    return(gene_plot)
+  } else {
+    print(paste(gene_name, "的T检验P值为", p_value, "，不显著"))  # 打印不显著的基因名称和p值
+    return(NULL)  # 如果 p 值不显著或无效，返回NULL
+  }
+}
+
+# 存储所有生成的图表
+plot_list <- lapply(1:nrow(gene_list), function(i) {
+  gene_id <- gene_list$Ensembl_id[i]
+  gene_name <- gene_list$Symbol[i]
+  plot_gene_expression(gene_id, gene_name, gut_2_group_tpm)
+})
+
+# 移除NULL值
+plot_list <- plot_list[!sapply(plot_list, is.null)]
+
+# 确保 plot_list 中所有对象都是 ggplot 对象
+plot_list <- lapply(plot_list, function(p) {
+  if (inherits(p, "ggplot")) return(p)
+  else return(NULL)
+})
+
+plot_list <- plot_list[!sapply(plot_list, is.null)]
+
+# 检查 plot_list 的内容
+if (length(plot_list) == 0) {
+  stop("plot_list is empty after filtering non-ggplot objects.")
+} else {
+  print(paste("Number of valid ggplot objects:", length(plot_list)))
+}
+
+# 使用 cowplot 组合所有图表
+combined_plot <- plot_grid(plotlist = plot_list, ncol = 4, align = 'v')
+
+# 添加标题
+title <- ggdraw() + 
+  draw_label(
+    "Gene Expression Analysis",
+    fontface = 'bold',
+    size = 20,
+    x = 0.5,
+    hjust = 0.5
+  )
+
+# 将标题与图表组合
+p7 <- plot_grid(title, combined_plot, ncol = 1, rel_heights = c(0.05, 1))
+
+# 显示最终的组合图
+print(p7)
+
+ggsave("005_Gene_expression_with_T_test.pdf", plot = p7, width = 16, height = 20, dpi = 300)
+```
+
+
+
+
+
+
+
