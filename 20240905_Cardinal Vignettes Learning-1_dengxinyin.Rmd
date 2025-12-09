@@ -1,0 +1,550 @@
+---
+title: "20240905_Cardinal Vignettes Learning-1_dengxinyin"
+author: "Deng Xinyin"
+date: "2024-09-05"
+output:
+  html_document:
+    theme: united  # 设置 HTML 主题为 "united"
+    df_print: kable  # 设置数据框的输出格式为 "kable"
+    toc: true  # 启用目录（Table of Contents）
+    toc_depth: 4  # 目录显示深度为4级
+    toc_float: true  # 启用浮动目录
+mainfont: Arial
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  tidy = TRUE,  # 美化代码输出
+  tidy.opts = list(width.cutoff = 95),  # 设定代码美化的宽度限制
+  message = FALSE,  # 不显示信息
+  warning = FALSE,  # 不显示警告
+  time_it = TRUE,  # 启用执行时间测量
+  error = TRUE,  # 保留错误信息
+  fig.height = 8,  # 设置图像高度
+  fig.width = 10,  # 设置图像宽度
+  fig.align = 'center'  # 设置图像对齐方式为居中
+)
+
+knitr::opts_knit$set(root.dir = "/home/hsinyinteng/Spatial_Metabolomics/mouse_ovary")
+```
+
+
+# 前言
+
+**项目名称**: 学习空间代谢组教程(Cardinal)
+
+**研究人员**: 邓欣寅  
+
+**记录日期**: 2024年9月5日 
+
+**实验开始时间**: 2024年9月4日 
+
+**实验结束时间**: 2024年9月5日 
+
+**目标**: Cardinal是一款用于处理空间代谢组数据的R包。因本课题后续需要进行小鼠卵巢的空间代谢组分析，因此参照该教程进行学习。主要学习目标为：了解并掌握质谱成像数据的组成和读取方式，了解质谱成像数据的常见分析方法及可视化。
+
+
+因为是刚接手空间代谢组的课题，此前对该领域及相关分析流程均未接触过。幸运的是，在空间代谢组分析上，有一款开源的R包---Cardinal---可以使用，并且也有相关的官网教程和讲解视频，这里要感谢Dr.Kylie Ariel Bemis及其团队。
+
+在课题之初，主要是跟着官网教程进行学习。目的是熟悉空间代谢组/质谱成像数据的处理及分析流程。
+
+代码来源：[Cardinal官网](https://cardinalmsi.org/workflows/)。
+
+
+# 数据管理与存储
+## 原始数据
+**数据来源**: [CardinalWorkflows](https://bioconductor.org/packages/release/data/experiment/src/contrib/CardinalWorkflows_1.38.0.tar.gz)(CardinalWorkflows是Cardinal的依赖包)
+
+**样本编号**: pig206
+
+**数据格式**: MSImagingExperiment文件
+
+**数据大小**: 193.1 Mb
+
+**下载日期**: 2024年9月4日
+
+**文件命名**: pig206 
+
+**数据存储**: 该文件可从CardinalWorkflows包中直接读取
+
+
+## 元数据
+**项目名称**: 学习质谱成像数据分析教程
+
+**实验条件**: 猪胎整体横截面切片(Whole Pig Fetus Cross-Section)：使用解吸电喷雾电离（DESI） 捕获的猪胎横截面, 仪器为Thermo LTQ 。
+
+**获取方式**: 从CardinalWorkflows包中直接读取
+
+**数据处理工具**: 
+  
+  R 4.4.0
+  
+  Ubuntu 20.04.6 LTS   
+  
+  Cardinal_3.6.5     
+
+
+
+# 代码与软件环境
+## 代码版本控制
+**GitHub仓库**: 
+
+**代码版本**: v1.0
+
+**提交ID**: 
+
+## 软件环境
+**操作系统**: Ubuntu 20.04.6 
+
+**编程语言**: R 4.4.0
+
+**依赖库**: 
+
+    readxl_1.4.3  
+    
+    dplyr_1.1.4
+    
+    S4Vectors_0.42.1    
+    
+**工具**:  
+
+    Cardinal_3.6.5(质谱成像数据处理及可视化)
+    
+    CardinalWorkflows_1.36.0(质谱成像示例数据)
+    
+## 环境管理
+
+    见文末的Session information
+    
+
+===============================================================================================
+
+# Segmentation
+
+[Segmentation of MS imaging experiments with Cardinal](https://www.bioconductor.org/packages/release/data/experiment/vignettes/CardinalWorkflows/inst/doc/MSI-segmentation.html#pre-processing-1)
+
+这一部分教程主要是对质谱成像数据(MSImagingArray格式或MSImagingExperiment格式)进行预处理、可视化、区域分割(Segmentation)以及对各区域的主要特征代谢物(features)进行可视化。
+
+使用的是无监督方式(unsupervised analysis, such as segmentation)进行聚类，各个像素点(pixel)的标签信息是未知的。
+
+
+## 1. Introduction
+
+MSImagingExperiment无监督分析的目标是发现数据中具有不同化学特征的区域，并选择唯一区分这些不同区域的*m/z*值。
+
+从算法上讲，这意味着对数据进行聚类。在MSImagingExperiment中，得到的聚类称为空间分割，而聚类称为分段。
+
+这里，我们展示了一个使用*Cardinal*的示例分段工作流。
+
+我们首先加载包：
+
+```{r library}
+library(Cardinal)
+```
+
+### 1.2 Segmentation of a pig fetus wholy body cross section
+
+此示例使用 PIGII_206 数据集：猪胎整体横截面切片(Whole Pig Fetus Cross-Section)：使用解吸电喷雾电离（DESI） 捕获的猪胎横截面, 仪器为Thermo LTQ。
+
+First, we load the dataset from the *CardinalWorkflows* package using `exampleMSIData()`.
+
+```{r load-pig206}
+# BiocManager::install("CardinalWorkflows")
+library(CardinalWorkflows)
+pig206 <- CardinalWorkflows::exampleMSIData("pig206")
+
+# 查看 pig206 对象的大小并转换为更易读的格式
+size_of_pig206 <- object.size(pig206)
+formatted_size <- format(size_of_pig206, units = "auto")  # 自动选择单位
+print(formatted_size)  # 打印格式化后的大小
+
+```
+
+该数据集包含 4,959 条光谱，具有 10,200 *m/z*值。
+
+```{r show-pig206}
+pig206
+```
+
+![Optical image of the pig fetus section](Image/pig206-optical.png)
+
+In the optical image shown above, the brain (left), heart (center), and liver (large dark region) are clearly visible. 
+
+在上面显示的光学图像中，大脑（左）、心脏（中）和肝脏（大的暗区）清晰可见。
+
+```{r mz-885}
+image(pig206, mz=885.5, tolerance=0.5, units="mz")
+```
+
+数据集已被裁剪以去除背景载玻片像素，只留下组织切片本身进行分析。
+
+### 1.3 Pre-processing 预处理
+
+对于统计分析，将数据集减少为仅包含峰值非常有用。
+
+We calculate the mean spectrum using `summarizeFeatures()`.
+
+```{r pig206-mean}
+pig206 <- summarizeFeatures(pig206, c(Mean="mean"))
+```
+
+```{r plot-pig206-mean}
+plot(pig206, "Mean", xlab="m/z", ylab="Intensity")
+```
+
+为了使不同像素之间的质谱具有可比性，有必要对数据进行归一化。我们将使用 TIC 进行标准化。
+
+让我们计算一下 TIC，看看它目前在原始、未处理的 specra 中的数据集中是如何变化的。
+
+```{r pig206-tic}
+pig206 <- summarizePixels(pig206, c(TIC="sum"))
+```
+
+```{r plot-pig206-tic}
+image(pig206, "TIC")
+```
+
+为了处理数据集，我们将使用 `peakProcess()` 对质谱的子集进行峰选取，然后使用这些作为参考来总结数据集中每个质谱中的峰。
+
+使用`sampleSize=0.1` 对 10% 的谱图进行峰挑选，以创建参比峰。 `SNR=3` 表示峰值检测的信噪比阈值。 `tolerance=0.5` 表示峰之间的最小距离。 (Peaks closer together than this are merged 比这更近的峰将被合并)
+
+```{r peak-process}
+pig206_peaks <- pig206 |>
+	normalize(method="tic") |>
+	peakProcess(SNR=3, sampleSize=0.1,
+		tolerance=0.5, units="mz")
+
+pig206_peaks
+```
+
+这将生成一个具有 687 个峰值的质心数据集。
+
+### 1.4 Visualization 可视化
+
+在进行统计分析之前，我们首先对数据集进行一些探索性可视化分析。
+
+#### Ion images 离子图像
+
+下面，我们绘制了对应于主要器官的几个手工选择的峰。
+
+*m/z* 187 在心脏中似乎非常丰富
+
+```{r mz-187}
+image(pig206_peaks, mz=187.36)
+```
+
+*m/z* 840 在大脑和脊髓中含量很高
+
+```{r mz-840}
+image(pig206_peaks, mz=840.43)
+```
+
+*m/z* 537 在肝脏中含量很高.
+
+```{r mz-537}
+image(pig206_peaks, mz=537.08)
+```
+
+我们统计分析的目标是自动选择区分这些区域的峰，而不是手动查看完整的数据集并手动选择峰。
+
+#### Principal components analysis (PCA) 主成分分析
+
+主成分分析（PCA）是探索数据集的常用方法。 PCA is available in *Cardinal* through the `PCA()` method.
+
+下面，我们计算前 3 个主成分。
+
+```{r}
+pig206_pca <- PCA(pig206_peaks, ncomp=3)
+
+pig206_pca
+```
+
+Next, we overlay the first 3 principal components.
+
+```{r}
+image(pig206_pca, smooth="adaptive", enhance="histogram")
+```
+
+我们也可以绘制主成分的载荷。
+
+```{r}
+plot(pig206_pca, linewidth=2)
+```
+
+PCA 有时可用于探索数据集。例如，在这里，我们可以看到 PC3 似乎区分了肝脏，但也包括其他结构。这使得很难充分利用 PCA 进行分析。
+
+#### Non-negative matrix factorization (NMF) 非负矩阵分解
+
+非负矩阵分解 （NMF） 是 PCA 的流行替代方案。它与 PCA 类似，但会产生非负载荷，这使其更易于解释，更适合光谱数据。 NMF is available in *Cardinal* through the `NMF()` method.
+
+下面，我们计算前 3 个 NMF组分。
+
+```{r}
+pig206_nmf <- NMF(pig206_peaks, ncomp=3, niter=30)
+
+pig206_nmf
+```
+
+接下来，我们叠加前 3 个 NMF组分。
+
+```{r}
+image(pig206_nmf, smooth="adaptive", enhance="histogram")
+```
+
+我们也可以绘制 NMF组分的载荷。
+
+```{r}
+plot(pig206_nmf, linewidth=2)
+```
+
+在这种情况下，NMF 似乎比 PCA 更能区分形态。
+
+### 1.5 Segmentation with spatial shrunken centroids (SSC) 使用空间收缩质心 （SSC） 进行分割
+
+为了分割数据集并自动选择区分每个区域的峰值，我们将使用 Cardinal 提供的方法`spatialShrunkenCentroids()`
+
+此方法的重要参数包括：
+
+-   `weights` The type of spatial weights(空间权重类型) to use:
+
+    -   *"gaussian"* 使用简单的 Gaussian 平滑内核
+
+    -   *"adaptive"* 使用自适应内核，有时可以更好地保留边缘
+
+-   `r` 邻域平滑半径;这应该根据数据集中空间区域的大小和粒度来选择
+
+-   `k` 要尝试的最大分段数;空区段将被删除，因此生成的区段使用的区段可能会少于此数字。
+
+-   `s` 收缩率或稀疏度参数;此数字越高，用于确定最终分割的峰值就越少。
+
+可以将k设置得相对较高，并让算法删除空segment。可以使用s参数设置大范围的稀疏性。
+
+```{r ssc}
+set.seed(1)
+pig206_ssc <- spatialShrunkenCentroids(pig206_peaks,
+	weights="adaptive", r=2, k=8, s=2^(1:6))
+
+pig206_ssc
+```
+
+这将在ResultsList中生成 6 个拟合模型。
+
+如元数据列所示，对于较高的s值，生成的区段数量会更少。这是因为用于确定分段的峰值较少。
+
+较大的s值将删除无信息性的峰，但非常大的s值也可能删除有意义的峰。
+
+对于非常大的s值，形态结构将开始从分割中消失。
+
+最有趣和最有用的分割往往是那些s值最高但仍显示有意义的形态的分割。
+
+我们还可以查看`AIC`和`BIC`值，以帮助指导我们选择要进一步探索的细分。值越小越好，但较小的差异变得意义不大。
+
+在这种情况下，最后 3 个模型 (`s=16`, `s=32`, and `s=64`) 似乎都比以前的模型好得多，但基于 AIC 彼此之间没有显著差异。基于 BIC，最后两个模型似乎是最好的。 
+
+However, the models for `s=16` and `s=32` support 7-8 segments, while the model for `s=64` only supports 3 segments.
+
+#### Plotting the segmentation 绘制分段
+
+让我们绘制 4 个最稀疏的分段
+
+```{r ssc-image-multi}
+image(pig206_ssc, i=3:6)
+```
+
+查看分段如何随着使用的峰减少和分段数量的减少而变化非常有用。嘈杂、意义较低的片段往往首先被删除，因此我们想探索具有最高s值的分割，它仍然捕捉到我们期望看到的形态。在`s=64`时，心脏段丢失。我们将选择仍然包含心脏的最稀疏的分段。
+
+```{r ssc-image-best}
+pig206_ssc1 <- pig206_ssc[[5]]
+
+image(pig206_ssc1)
+```
+
+请注意，似乎不属于任何区段的半透明颜色表示低概率区域（即分割中的高不确定性）。
+
+我们可以绘制 segment assignments，而不是 probrates 来查看确切的分割。
+
+```{r ssc-image-class}
+image(pig206_ssc1, type="class")
+```
+
+在这里，我们可以看到心脏、肝脏和大脑分为第 2 、 6 和 7 段。
+
+#### Plotting the (shrunken) mean spectra 绘制（缩小的）平均光谱
+
+绘制收缩的质心类似于绘制每个线段的平均频谱。
+
+```{r ssc-centers}
+plot(pig206_ssc1, type="centers", linewidth=2)
+```
+
+让我们分解出心脏、肝脏和大脑部分（2、6 和 7）的质心(centroids)。
+
+```{r ssc-centers-2}
+plot(pig206_ssc1, type="centers", linewidth=2,
+	select=c(2,6,7), superpose=FALSE, layout=c(1,3))
+```
+
+一些差异是可见的，但仅根据（缩小的）平均谱图可能很难准确判断哪些峰在不同段之间发生变化。
+
+#### Plotting and interpretting t-statistics of the *m/z* values 绘制和解释 m/z 值的 t 统计量
+
+绘制 t 统计量可以准确地告诉我们每个段的质心和全局平均谱之间的关系。
+
+t 统计量是区段质心与全局平均值之间的差值除以标准误差。
+
+正 t 统计量表明，相对于（全局）平均谱图，该段中的峰强度系统性地更高。
+
+负 t 统计量表明，相对于（全局）平均谱图，该段中的峰强度系统性较低。
+
+空间收缩质心的工作原理是通过s将这些 t 统计量向 0 收缩 ，然后使用新的 t 统计量重新计算线段质心。其效果是，从分割中有效地消除了特定段与全局平均值之间差异不大的峰值。
+
+```{r ssc-statistic}
+plot(pig206_ssc1, type="statistic", linewidth=2)
+```
+
+如果我们分解心脏、肝脏和大脑部分的 t 统计量，我们可以学到一些有趣的东西。
+
+```{r ssc-statistic-2}
+plot(pig206_ssc1, type="statistic", linewidth=2,
+	select=c(2,6,7), superpose=FALSE, layout=c(1,3))
+```
+
+很少有峰能区分心脏（第 2 段），而更多的峰能区分肝脏和大脑（第 6 段和第 7 段）。
+
+#### Retrieving the top *m/z* values 检索前 m/z 值
+
+使用`topFeatures()` 提取最能区分每个区段的峰的 m/z 值，并按 t 统计量排序。
+
+```{r top-ssc}
+pig206_ssc_top <- topFeatures(pig206_ssc1)
+```
+
+与心脏相关的峰值：
+
+```{r top-heart}
+subset(pig206_ssc_top, class==2 & statistic > 0)
+```
+
+与肝脏相关的峰：
+
+```{r top-liver}
+subset(pig206_ssc_top, class==6 & statistic > 0)
+```
+
+与大脑相关的峰值：
+
+```{r top-brain}
+subset(pig206_ssc_top, class==7 & statistic > 0)
+```
+
+每个分段的top m/z 值与手动选择的峰值非常匹配。
+
+## 2. Segmentation of a cardinal painting
+
+一幅北美红雀的图像分割，在我们不知道基本事实的数据上评估无监督方法（如分割）可能很困难。
+
+在本节中，我们使用一幅画的 MS 图像，其中我们知道基本事实。
+
+```{r load-cardinal}
+cardinal <- CardinalWorkflows::exampleMSIData("cardinal")
+```
+
+![Oil painting of a cardinal](Image/cardinal-optical.png)
+
+在这个实验中，DESI 光谱是从北美红雀的油画中收集的。
+
+```{r show-cardinal}
+cardinal
+```
+
+该数据集包括 12,600 条光谱，具有 10,800 m/z 值。
+
+### 2.1 Pre-processing 预处理
+
+我们将像以前一样从可视化平均谱开始。
+
+```{r cardinal-mean}
+cardinal <- summarizeFeatures(cardinal, c(Mean="mean"))
+```
+
+```{r plot-cardinal-mean}
+plot(cardinal, "Mean", xlab="m/z", ylab="Intensity")
+```
+
+以及总离子电流(total ion current).
+
+```{r cardinal-tic}
+cardinal <- summarizePixels(cardinal, c(TIC="sum"))
+```
+
+```{r plot-cardinal-tic}
+image(cardinal, "TIC")
+```
+
+我们将像以前一样对数据集进行预处理，方法是对 10% 的光谱进行峰拾取，然后汇总每个光谱的这些峰。
+
+```{r cardinal-process}
+cardinal_peaks <- cardinal |>
+	normalize(method="tic") |>
+	peakProcess(SNR=3, sampleSize=0.1,
+		tolerance=0.5, units="mz")
+
+cardinal_peaks
+```
+
+这将生成具有 929 个峰的质心数据集。a centroided dataset with 929 peaks.
+
+### 2.2 Segmentation with SSC 使用 SSC 进行细分
+
+现在，我们使用空间收缩质心来分割数据集。
+
+```{r ssc-cardinal}
+set.seed(1)
+cardinal_ssc <- spatialShrunkenCentroids(cardinal_peaks,
+	weights="adaptive", r=2, k=8, s=2^(1:6))
+
+cardinal_ssc
+```
+
+```{r ssc-cardinal-multi}
+image(cardinal_ssc, i=2:5)
+```
+
+我们可以看到，增加较高的稀疏度会导致丢失 "wing" 段，因此我们将选择保留 cardinal 翅膀的最稀疏段。
+
+现在我们可以使用分割来重建原画。
+
+```{r ssc-cardinal-image}
+cardinal_ssc1 <- cardinal_ssc[[4]]
+
+pal <- c("1"="gray", "2"=NA, "3"="brown", "4"="red",
+	"5"=NA, "6"="darkred", "7"="black", "8"="firebrick")
+
+image(cardinal_ssc1, col=pal)
+```
+
+让我们找到与基数的 body 关联的 m/z 值。
+
+```{r top-body}
+cardinal_ssc_top <- topFeatures(cardinal_ssc1)
+
+subset(cardinal_ssc_top, class==4)
+
+image(cardinal_peaks, mz=207.05, smooth="guided", enhance="histogram")
+```
+
+让我们找到与 "DESI-MS" 文本相关的 m/z 值。
+
+```{r top-text}
+subset(cardinal_ssc_top, class==6)
+
+image(cardinal_peaks, mz=648.99, smooth="guided", enhance="histogram")
+```
+
+整体而言，质谱成像数据的处理方式基本为：数据预处理、代谢物聚类分析(PCA,NMF,SSC)、筛选特征代谢物及可视化。其中代谢物聚类分析的部分可以找到区域特异性的代谢物，对于区分不同区域有很大帮助。
+
+## 3. Session information
+```{r session-info}
+sessionInfo()
+```
+
